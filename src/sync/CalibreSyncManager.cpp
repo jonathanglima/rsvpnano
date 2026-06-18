@@ -9,6 +9,7 @@
 #include "storage/fs/StorageFiles.h"
 #include "storage/fs/StoragePaths.h"
 #include "text/AsciiText.h"
+#include "text/LatinText.h"
 
 // The reconciling sync engine. Networking is delegated to net::HttpFetch and
 // CalibreClient; the reconcile diff is the pure calibresync::computeSyncPlan()
@@ -21,13 +22,58 @@ namespace {
 
 constexpr const char *kLogTag = "[calibre-sync]";
 
-// Cap a single book download. calibre .rsvp files are small text; 8 MiB is a
-// generous ceiling that still protects RAM/SD from a runaway response.
-constexpr size_t kMaxBookBytes = 8UL * 1024UL * 1024UL;
+// Cap a single book download. The response is streamed straight to SD (never
+// held in RAM), so this only guards against a runaway/garbage response, not
+// memory. 8 MiB turned out to be too tight -- a few complete-works .rsvp files
+// (e.g. Machado, Freud) legitimately exceed it and were silently failing every
+// sync -- so the ceiling is 64 MiB.
+constexpr size_t kMaxBookBytes = 64UL * 1024UL * 1024UL;
 
 bool isSafeFilenameChar(char c) {
   return AsciiText::isAlphaNumeric(c) || c == '-' || c == '_' || c == '.' ||
          c == ' ';
+}
+
+// Decodes one UTF-8 sequence starting at index and advances index past it.
+// Returns the codepoint, or 0xFFFD (and advances one byte) on malformed input.
+// Calibre titles arrive as UTF-8; folding them to ASCII for the on-SD filename
+// needs codepoints, not raw bytes.
+uint32_t decodeUtf8Codepoint(const String &text, size_t &index) {
+  const size_t length = text.length();
+  const uint8_t first = static_cast<uint8_t>(text[index]);
+  if (first < 0x80) {
+    ++index;
+    return first;
+  }
+  uint32_t codepoint;
+  int continuation;
+  if ((first & 0xE0) == 0xC0) {
+    codepoint = first & 0x1F;
+    continuation = 1;
+  } else if ((first & 0xF0) == 0xE0) {
+    codepoint = first & 0x0F;
+    continuation = 2;
+  } else if ((first & 0xF8) == 0xF0) {
+    codepoint = first & 0x07;
+    continuation = 3;
+  } else {
+    ++index;
+    return 0xFFFD;
+  }
+  for (int k = 1; k <= continuation; ++k) {
+    if (index + static_cast<size_t>(k) >= length) {
+      ++index;
+      return 0xFFFD;
+    }
+    const uint8_t next = static_cast<uint8_t>(text[index + k]);
+    if ((next & 0xC0) != 0x80) {
+      ++index;
+      return 0xFFFD;
+    }
+    codepoint = (codepoint << 6) | (next & 0x3F);
+  }
+  index += static_cast<size_t>(continuation) + 1;
+  return codepoint;
 }
 
 bool ensureLibraryDirectories() {
@@ -126,9 +172,19 @@ const char *CalibreSyncManager::manifestPath() {
 String CalibreSyncManager::sanitizeBaseName(const String &name) {
   String sanitized;
   sanitized.reserve(name.length());
-  for (size_t i = 0; i < name.length(); ++i) {
-    const char c = name[i];
-    sanitized += isSafeFilenameChar(c) ? c : '-';
+  // Walk UTF-8 codepoints, folding accents to their ASCII base (e -> e, o ->
+  // o, c -> c, ...) via the same LatinText map the display uses, so filenames
+  // read as "Etica" rather than "--tica". Anything that doesn't fold to a safe
+  // filename character becomes '-'.
+  size_t i = 0;
+  while (i < name.length()) {
+    const uint32_t codepoint = decodeUtf8Codepoint(name, i);
+    uint8_t storageByte = 0;
+    char folded = '-';
+    if (LatinText::storageByteForCodepoint(codepoint, storageByte)) {
+      folded = static_cast<char>(LatinText::fallbackAsciiByte(storageByte));
+    }
+    sanitized += isSafeFilenameChar(folded) ? folded : '-';
   }
   sanitized.trim();
   while (sanitized.startsWith(".")) {
@@ -311,6 +367,11 @@ bool CalibreSyncManager::downloadTo(const String &url, const String &path,
   };
 
   const net::HttpResult res = net::get(url, sink, auth, kMaxBookBytes);
+  // Force the streamed bytes to physical media before we promote the .tmp.
+  // Without this fsync the directory rename can land while the data clusters
+  // are still in cache; an unclean power-off then leaves a correctly-sized but
+  // all-zero file (the same failure that zeroes the manifest).
+  out.flush();
   out.close();
 
   if (!res.ok || !writeOk) {
@@ -541,10 +602,25 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     SD_MMC.remove(tmpPath);
     File mf = SD_MMC.open(tmpPath, FILE_WRITE);
     if (mf) {
-      mf.print(body);
+      const size_t written = mf.print(body);
+      // fsync the manifest data before the rename: a directory entry that
+      // commits ahead of its data clusters is exactly how the manifest ends up
+      // correctly-sized but all-zero after an unclean power-off, which makes the
+      // next sync re-download the whole library.
+      mf.flush();
       mf.close();
-      SD_MMC.remove(manifestPath());
-      SD_MMC.rename(tmpPath, manifestPath());
+      if (written != body.length()) {
+        Serial.printf("%s manifest write short (%u/%u); keeping previous\n",
+                      kLogTag, static_cast<unsigned>(written),
+                      static_cast<unsigned>(body.length()));
+        SD_MMC.remove(tmpPath);
+      } else {
+        SD_MMC.remove(manifestPath());
+        if (!SD_MMC.rename(tmpPath, manifestPath())) {
+          Serial.printf("%s manifest rename failed\n", kLogTag);
+          SD_MMC.remove(tmpPath);
+        }
+      }
     } else {
       Serial.printf("%s could not write manifest\n", kLogTag);
     }
