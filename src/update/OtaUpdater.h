@@ -12,7 +12,7 @@ class OtaUpdater {
   struct Config {
     String wifiSsid;
     String wifiPassword;
-    String githubOwner = "ionutdecebal";
+    String githubOwner = "jonathanglima";
     String githubRepo = "rsvpnano";
     String assetName = Board::Config::OTA_ASSET_NAME;
     bool autoCheck = false;
