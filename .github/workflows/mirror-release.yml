@@ -1,0 +1,118 @@
+name: Mirror upstream releases (with Calibre patch)
+
+# Every day (and on manual trigger), check whether upstream cut a new release.
+# If so, merge that tag into the `calibre` patch branch and, when it merges
+# cleanly, build + publish a matching "<tag>-calibre" release with the OTA
+# asset. If the merge conflicts, open an issue and stop (resolve it by hand,
+# push the branch, and the next run finishes the release).
+#
+# NOTE: scheduled workflows only run from the default branch, so this file
+# lives on `main` even though it builds the `calibre` branch.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'   # daily, 04:17 UTC
+  workflow_dispatch: {}    # allow a manual run any time
+
+permissions:
+  contents: write   # push the patch branch + create releases
+  issues: write     # file an issue when a merge conflicts
+
+concurrency:
+  group: mirror-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: ionutdecebal/rsvpnano
+  PATCH_BRANCH: calibre
+  BUILD_ENV: waveshare_esp32s3       # 3.49" LCD rev1
+  OTA_ASSET: rsvp-nano-ota.bin       # must match OTA_ASSET_NAME for that board
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patch branch (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          ref: calibre
+          fetch-depth: 0
+
+      - name: Detect upstream release and merge it in
+        id: prep
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git" 2>/dev/null || \
+            git remote set-url upstream "https://github.com/$UPSTREAM.git"
+          git fetch --quiet upstream --tags
+
+          TAG="$(gh release view --repo "$UPSTREAM" --json tagName -q .tagName)"
+          REL="${TAG}-calibre"
+          echo "Upstream latest release: $TAG  ->  fork release: $REL"
+          echo "rel=$REL" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$REL" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $REL already exists; nothing to do."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          if git merge --no-edit "$TAG"; then
+            git push origin "HEAD:$PATCH_BRANCH"
+            echo "Merged $TAG cleanly into $PATCH_BRANCH."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort || true
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            TITLE="Manual rebase needed: merge upstream $TAG into $PATCH_BRANCH"
+            if ! gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                 --search "$TITLE in:title" | grep -q .; then
+              {
+                echo "Upstream released **$TAG**, but merging it into \`$PATCH_BRANCH\` hit conflicts,"
+                echo "so the automated \`$REL\` build was skipped."
+                echo
+                echo "Resolve locally, then the next run finishes the release:"
+                echo '```'
+                echo "git checkout $PATCH_BRANCH && git pull"
+                echo "git fetch upstream --tags"
+                echo "git merge $TAG    # fix conflicts, commit"
+                echo "git push origin $PATCH_BRANCH"
+                echo '```'
+              } > /tmp/issue.md
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file /tmp/issue.md
+            fi
+          fi
+
+      - name: Set up Python
+        if: steps.prep.outputs.proceed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        if: steps.prep.outputs.proceed == 'true'
+        run: pip install --quiet platformio
+
+      - name: Build firmware
+        if: steps.prep.outputs.proceed == 'true'
+        env:
+          # pio_set_version.py honours this override -> on-device version == release tag
+          RSVP_FIRMWARE_VERSION: ${{ steps.prep.outputs.rel }}
+        run: pio run -e "$BUILD_ENV"
+
+      - name: Stage OTA asset (exact name the firmware looks for)
+        if: steps.prep.outputs.proceed == 'true'
+        run: cp ".pio/build/$BUILD_ENV/firmware.bin" "$OTA_ASSET"
+
+      - name: Publish release
+        if: steps.prep.outputs.proceed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.rel }}
+          target_commitish: calibre
+          name: ${{ steps.prep.outputs.rel }}
+          body: "Automated build: upstream release + Calibre sync patch."
+          files: ${{ env.OTA_ASSET }}
