@@ -363,6 +363,9 @@ void App::handleScreenAction(screens::Action action, uint32_t nowMs) {
         companionApi_.begin();
         renderScreen(nowMs);
         return;
+    case screens::Action::CalibreSync:
+        runCalibreSync();
+        return;
     case screens::Action::RssRefresh:
         runRss();
         return;

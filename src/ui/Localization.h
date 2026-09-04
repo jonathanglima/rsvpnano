@@ -172,6 +172,7 @@ enum class UiText : uint8_t {
     Clear,
     Show,
     Hide,
+    SyncCalibre,
     Count,
 };
 
