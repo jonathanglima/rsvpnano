@@ -20,7 +20,7 @@ and trigger the sync remotely).
 │  CalibreSyncManager │                           │  /ajax/library-info  │
 │  CalibreClient      │                           │  /ajax/search        │
 │  SD manifest        │                           │  /ajax/book/<id>     │
-│  /books/.calibre-   │                           │  /get/rsvp/<id>/<lib>│
+│ /library/.calibre-  │                           │  /get/rsvp/<id>/<lib>│
 │    sync.json        │                           └──────────────────────┘
 └─────────────────────┘
 ```
@@ -30,11 +30,12 @@ Key source files:
 | File | Role |
 |------|------|
 | `src/calibre/CalibreClient.h/.cpp` | HTTP client + pure JSON parsers (`calibreparser` namespace) |
-| `src/calibre/CalibreSettings.h/.cpp` | NVS-backed configuration (`CalibreSettings` struct) |
-| `src/calibre/CalibreSettingsJson.h` | Pure serialize/parse helpers for the companion HTTP API |
-| `src/sync/CalibreSyncPlan.h` | Pure, host-testable reconcile core (`calibresync::computeSyncPlan`) |
-| `src/sync/CalibreSyncManager.h/.cpp` | On-device orchestrator: WiFi up → search → diff → download → delete → manifest rewrite → reindex |
-| `src/settings/PreferenceKeys.h` | NVS key constants (`kPrefCal*`) |
+| `src/calibre/CalibreSettings.h` | The engine's own settings struct — plain Arduino `String`, no dependency on the firmware settings stack, so `test/calibre/` can compile it against the host shim |
+| `src/calibre/CalibreSyncPlan.h` | Pure, host-testable reconcile core (`calibresync::computeSyncPlan`) |
+| `src/calibre/CalibreSyncManager.h/.cpp` | On-device orchestrator: WiFi up → search → diff → download → delete → manifest rewrite → reindex |
+| `src/network/HttpFetch.h/.cpp` | Streaming HTTP GET used by the client |
+| `src/companion/http/CompanionCalibreApi.cpp` | `GET`/`PUT /api/v2/calibre` for the companion app |
+| `src/settings/SettingsModel.h` | Persisted form: `settings::CalibreSettings` inside `DeviceSettings`, password in `DeviceSecrets` |
 
 The JSON parsers and reconcile core are deliberately free of WiFi/SD/clock dependencies so
 they can be unit-tested on the host with the `test/support/Arduino.h` shim
@@ -100,27 +101,41 @@ The server listens on all interfaces and is reachable at `http://<host-lan-ip>:8
 
 ### On-device: Settings → Calibre
 
-Navigate **Settings → Calibre** on the device to set:
+> **Not available as of v0.0.9-calibre.** Upstream replaced the whole screen
+> system with `src/ui/screens/*Screen.cpp` in v0.0.9, and the Calibre submenu
+> has not been rebuilt against it yet. Configure via `settings.toml` (below)
+> or the companion API until it is.
 
-| Field | Description |
-|-------|-------------|
-| **Server URL** | `http://<host-ip>:<port>` — no trailing slash |
-| **Library ID** | Leave blank to use the server's `default_library` |
-| **Search query** | e.g. `tag:rsvp` (default) |
-| **Username / Password** | HTTP Basic credentials, if the server has `--enable-auth` |
-| **Deletion policy** | `Mirror` (default) or `Keep` — see below |
+### By hand: /config/settings.toml on the SD card
 
-Then tap **Sync from Calibre** to run an immediate sync.
+Settings are stored as TOML on the card, so the `[calibre]` table can simply be
+written there and picked up on the next boot:
+
+```toml
+[calibre]
+enabled = true
+baseUrl = "http://192.168.0.120:8080"
+libraryId = ""
+searchQuery = "tag:rsvp"
+username = ""
+deletionPolicy = "mirror"
+```
+
+There is deliberately no `password` key: the HTTP Basic password lives in the
+encrypted-secrets half of the store (`DeviceSecrets::calibrePassword`), never on
+the card. A server without `--enable-auth` needs no password at all.
 
 ### Via the companion app
 
-The companion app configures Calibre sync remotely over the device's AP/STA HTTP server
-using two routes:
+The firmware serves two routes for this over the device's AP/STA HTTP server. Note
+that the *app side* of this is not rebuilt yet — v0.0.9 reorganised the Kotlin shared
+module into per-domain packages and the Calibre screens have not been ported — so for
+now these are reachable with `curl` but not from the app UI:
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| `GET` | `/api/calibre-settings` | Read current settings |
-| `PUT` | `/api/calibre-settings` | Write settings |
+| `GET` | `/api/v2/calibre` | Read current settings |
+| `PUT` | `/api/v2/calibre` | Write settings |
 
 JSON contract:
 
@@ -145,14 +160,14 @@ the `password` field.
 
 `CalibreSyncManager::runSync()` executes the following steps:
 
-1. **Connect WiFi** using the stored SSID/password (`kPrefWifiSsid` / `kPrefWifiPass`).
+1. **Connect WiFi** using the stored SSID/password (`DeviceSettings::network` / `DeviceSecrets::wifiPassword`).
 2. **Resolve library** — `GET /ajax/library-info` to confirm or discover `library_id`.
 3. **Search** — `GET /ajax/search?query=<searchQuery>&library_id=<lib>` → `book_ids[]`.
 4. **Resolve each book** — `GET /ajax/book/<id>?library_id=<lib>` → `RsvpRef` (url, size, mtime).
 5. **Compute sync plan** — `calibresync::computeSyncPlan(remote, manifest, policy)` (pure, no I/O).
-6. **Download** new and changed files to `/books/books/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename).
+6. **Download** new and changed files to `/library/books/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename).
 7. **Delete** removed books from SD (Mirror policy only).
-8. **Rewrite manifest** `/books/.calibre-sync.json`.
+8. **Rewrite manifest** `/library/.calibre-sync.json`.
 9. **Reindex** — `StorageManager::refreshBooks()` so the library reflects the new/removed files.
 10. **Tear down WiFi**.
 
@@ -233,14 +248,14 @@ construct the URL from the template — both are equivalent.
 
 ## Incremental sync and the SD manifest
 
-The manifest at `/books/.calibre-sync.json` tracks every file the device has downloaded
+The manifest at `/library/.calibre-sync.json` tracks every file the device has downloaded
 from Calibre. It is keyed by `book_id`:
 
 ```json
 {
   "books": {
-    "1": { "key": "475|2026-06-17T15:37:34.528479+00:00", "path": "/books/books/Example_Book.rsvp" },
-    "2": { "key": "12048|2026-05-01T10:00:00.000000+00:00", "path": "/books/books/Another_Title.rsvp" }
+    "1": { "key": "475|2026-06-17T15:37:34.528479+00:00", "path": "/library/books/Example_Book.rsvp" },
+    "2": { "key": "12048|2026-05-01T10:00:00.000000+00:00", "path": "/library/books/Another_Title.rsvp" }
   }
 }
 ```
@@ -269,23 +284,26 @@ reliable RTC, so mtime is never parsed into an epoch — keys are compared byte-
 
 ---
 
-## NVS settings keys
+## Where settings are persisted
 
-All keys live in NVS namespace `"rsvp"` (15-char key limit). Defined in
-`src/settings/PreferenceKeys.h`:
+v0.0.9 replaced the flat `Preferences`/`kPref*` key space with a typed settings
+store, so Calibre no longer owns NVS keys of its own. It is a field on the
+device settings struct:
 
-| Constant | Key | Type | Description |
-|----------|-----|------|-------------|
-| `kPrefCalEnabled` | `cal_en` | bool | Enable/disable sync |
-| `kPrefCalUrl` | `cal_url` | String | Server base URL (trailing slash stripped on save) |
-| `kPrefCalLibrary` | `cal_lib` | String | Library ID; empty = use server `default_library` |
-| `kPrefCalQuery` | `cal_query` | String | Search query, e.g. `tag:rsvp` |
-| `kPrefCalUser` | `cal_user` | String | HTTP Basic username (optional) |
-| `kPrefCalPass` | `cal_pass` | String | HTTP Basic password (optional) |
-| `kPrefCalDelPol` | `cal_delpol` | uint8_t | 0 = Mirror, 1 = Keep |
+| Where | What |
+|-------|------|
+| `settings::DeviceSettings::calibre` | `enabled`, `baseUrl`, `libraryId`, `searchQuery`, `username`, `deletionPolicy` — serialised to `/config/settings.toml` by glaze |
+| `settings::DeviceSecrets::calibrePassword` | HTTP Basic password, kept in encrypted NVS alongside the Wi-Fi password and never written to the card |
 
-`loadCalibreSettings()` / `saveCalibreSettings()` open and close the NVS namespace
-internally, following the same pattern as `CompanionSyncManager`.
+Writes go through `SettingsStore::acceptChanges()` (and `acceptSecretChanges()`
+for the password), the same path every other setting uses.
+
+`CalibreSyncManager` still takes the older Arduino-`String` `CalibreSettings`
+struct rather than reading the store directly, so its reconcile core stays
+compilable on the host. `App.cpp` converts between the two before each run.
+
+> **Upgrading from v0.0.8-calibre:** the old `cal_*` NVS keys are gone, so
+> Calibre configuration does not survive the update and has to be entered again.
 
 ---
 
@@ -295,7 +313,7 @@ internally, following the same pattern as `CompanionSyncManager`.
   because `calibre-server` is a local, trusted-network service — the same model Calibre
   itself uses for its companion apps.
 - Credentials are stored in NVS only. They are **never written to the SD card**.
-- `GET /api/calibre-settings` always returns `"password": ""` — the stored password is
+- `GET /api/v2/calibre` always returns `"password": ""` — the stored password is
   never echoed back over the HTTP API. A `PUT` with an empty or absent `password` field
   preserves the stored credential (sentinel: empty string = "no change").
 - If security on an untrusted LAN is required, run `calibre-server` behind a TLS
