@@ -101,11 +101,20 @@ jobs:
         if: steps.prep.outputs.proceed == 'true'
         run: pip install --quiet platformio
 
+      # tools/pio_set_version.py reads RSVP_FIRMWARE_TAG (not ...VERSION) and
+      # refuses a tag that does not point at HEAD, so the tag has to exist
+      # locally before the build. Without this the firmware embeds the tag
+      # `git describe` finds -- upstream's v0.0.9 -- and OtaUpdater's
+      # `release->version == currentVersion()` check can never match, so the
+      # device offers the update it just installed, forever.
+      - name: Tag the build so the embedded version matches the release
+        if: steps.prep.outputs.proceed == 'true'
+        run: git tag -f "${{ steps.prep.outputs.rel }}" HEAD
+
       - name: Build firmware
         if: steps.prep.outputs.proceed == 'true'
         env:
-          # pio_set_version.py honours this override -> on-device version == release tag
-          RSVP_FIRMWARE_VERSION: ${{ steps.prep.outputs.rel }}
+          RSVP_FIRMWARE_TAG: ${{ steps.prep.outputs.rel }}
         run: pio run -e "$BUILD_ENV"
 
       - name: Stage OTA asset (exact name the firmware looks for)
