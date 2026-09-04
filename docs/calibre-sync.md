@@ -83,6 +83,33 @@ tag:rsvp
 Add this tag to every book you want on the device. Any valid Calibre search expression
 works — including saved searches (`search:<name>`). See the plugin README for details.
 
+### 3b. Tag articles (optional)
+
+The device shelves books and articles separately — `/library/books` vs `/library/articles`
+on SD — and draws them differently (`BookLibrary::isArticle()` tests nothing but the
+`/library/articles/` path prefix; `LibraryScreen` gives articles their own spine palette
+and a shorter spine). The sync routes on the Calibre tag **`article`**, matched
+case-insensitively:
+
+| Tags in Calibre | Lands in |
+|-----------------|----------|
+| `rsvp` | `/library/books` |
+| `rsvp`, `article` | `/library/articles` |
+
+The two tags are independent axes: `rsvp` decides *whether* a book syncs, `article`
+decides *how it is shelved*. Web clippings added by `calibre-url` carry `article` already.
+
+Retagging an existing book is cheap. The `.rsvp` bytes do not change, so the sync does not
+re-download it — it renames the file on SD, carrying the reading-progress
+(`.rstate.toml`) and index (`.ridx`/`.rdat`) sidecars with it, so you keep your place.
+Removing the tag moves it back.
+
+To keep the curated shelf clean in Calibre itself, use a Virtual Library
+(`not tag:article`) rather than a second Calibre library: the sync engine is
+single-library by construction (`CalibreSettings` has one `libraryId` and one
+`searchQuery`), and the SD manifest is keyed by bare `book_id`, so two libraries would
+collide on ids and Mirror deletion would wipe whichever library was not synced last.
+
 ### 4. Start calibre-server
 
 ```bash
@@ -165,14 +192,16 @@ the `password` field.
 3. **Search** — `GET /ajax/search?query=<searchQuery>&library_id=<lib>` → `book_ids[]`.
 4. **Resolve each book** — `GET /ajax/book/<id>?library_id=<lib>` → `RsvpRef` (url, size, mtime).
 5. **Compute sync plan** — `calibresync::computeSyncPlan(remote, manifest, policy)` (pure, no I/O).
-6. **Download** new and changed files to `/library/books/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename).
-7. **Delete** removed books from SD (Mirror policy only).
-8. **Rewrite manifest** `/library/.calibre-sync.json`.
-9. **Reindex** — `StorageManager::refreshBooks()` so the library reflects the new/removed files.
-10. **Tear down WiFi**.
+6. **Download** new and changed files to `<routed folder>/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename). The folder comes from `CalibreSyncManager::targetDirectoryFor()` — `/library/articles` for a book tagged `article`, `/library/books` otherwise.
+7. **Move** books whose bytes are unchanged but whose folder changed (a retag), renaming the `.rsvp` and its sidecars. No network.
+8. **Delete** removed books from SD, sidecars included (Mirror policy only).
+9. **Rewrite manifest** `/library/.calibre-sync.json`.
+10. **Reindex** — `StorageManager::refreshBooks()` so the library reflects the new/removed files.
+11. **Tear down WiFi**.
 
 Progress is reported via `ProgressCallback` with phases `"search"`, `"download"`,
-`"delete"`, `"done"`, `"error"` and a `current/total` count for percentage display.
+`"move"`, `"delete"`, `"done"`, `"error"` and a `current/total` count for percentage
+display.
 
 ---
 
@@ -211,6 +240,7 @@ there are more pages — append `&num=<n>&offset=<o>` to paginate.
 {
   "title": "Example Book",
   "authors": ["Jane Doe"],
+  "tags": ["rsvp", "article"],
   "last_modified": "2026-06-17T15:37:34+00:00",
   "formats": ["epub", "rsvp"],
   "other_formats": {
@@ -233,6 +263,14 @@ Fields read by firmware:
 | `format_metadata.rsvp.size` | integer (bytes) | Part of change-key |
 | `format_metadata.rsvp.mtime` | ISO-8601 with sub-second precision | Part of change-key |
 | `last_modified` | ISO-8601, second precision | Fallback timestamp when `mtime` absent |
+| `tags` | array of strings | Folder routing; `article` (any case) selects `/library/articles` |
+
+> **Trap:** `tags` appears **twice** in this payload — the real top-level array, and again
+> inside `category_urls` as an *object* (`"tags": {"article": "/ajax/books_in/..."}`).
+> Calibre does not guarantee key order, so `calibreparser::extractStringArray()` takes the
+> first `"tags"` whose value starts with `[`, which makes the object occurrence
+> unmatchable either way round. Both orders are covered by
+> `test_book_tags_ignores_category_urls_object`.
 
 Format names (in `.formats`, `.other_formats`, `.format_metadata`) are **lowercase**: `"rsvp"`, not `"RSVP"`.
 
@@ -265,15 +303,31 @@ reliable RTC, so mtime is never parsed into an epoch — keys are compared byte-
 `mtime` is taken from `format_metadata.rsvp.mtime` (sub-second precision); if absent,
 `last_modified` is used as fallback.
 
+The manifest's `path` is load-bearing beyond bookkeeping: it is what the reconcile compares
+against the routed destination to detect a retag.
+
 ### Reconcile logic (`calibresync::computeSyncPlan`)
 
 | Condition | Action |
 |-----------|--------|
 | Book in remote search, not in manifest | Download (new) |
-| Book in both, keys differ | Download (changed) |
-| Book in both, keys equal | Skip (unchanged) |
+| Book in both, keys differ | Download (changed), to the routed folder; the old copy is removed when the folder also changed |
+| Book in both, keys equal, routed folder differs | Move (retagged) — rename, no download |
+| Book in both, keys equal, same folder | Skip (unchanged) |
 | Book in manifest, not in remote, policy = `Mirror` | Delete from SD |
 | Book in manifest, not in remote, policy = `Keep` | Leave on SD |
+
+The folder axis is only consulted when the caller fills `RemoteEntry::path`. An empty
+path means "this caller does no routing" and the diff collapses to the original key-only
+behaviour — which is what keeps the pre-routing tests in `test/calibre/test_sync_plan.cpp`
+meaningful.
+
+**Why a move and not a re-download:** adding a tag in Calibre does not rewrite the
+`.rsvp`, so `size|mtime` is byte-identical. Treating the retag as a change would re-fetch
+data the device already has, and — because reading progress and the prebuilt index are
+sidecars keyed by *document path* — a naive rename of just the `.rsvp` would silently
+reset the reader to word zero and force a reindex. `moveBookFiles()` carries
+`.rstate.toml`, `.ridx` and `.rdat` along.
 
 ### Deletion policy
 
