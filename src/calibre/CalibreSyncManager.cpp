@@ -1,6 +1,6 @@
 #include "calibre/CalibreSyncManager.h"
 
-#include <SD_MMC.h>
+#include "board/BoardStorage.h"
 
 #include <utility>
 
@@ -25,6 +25,15 @@ constexpr const char *kLogTag = "[calibre-sync]";
 // /library/books. Matched case-insensitively (calibreparser::hasTag), because
 // Calibre preserves whatever case the user typed in the tag editor.
 constexpr const char *kArticleTag = "article";
+
+// Every card access goes through the board's filesystem rather than SD_MMC
+// directly. Not cosmetic: the ESP32-C6 board mounts its card over SPI and its
+// Board::Storage::filesystem() returns fs::SD, so a hard reference to SD_MMC
+// does not compile for that target at all -- which had been failing the C6 leg
+// of the release matrix, and with it the publish job for every board.
+fs::FS &sd() {
+  return Board::Storage::filesystem();
+}
 
 // Cap a single book download. The response is streamed straight to SD (never
 // held in RAM), so this only guards against a runaway/garbage response, not
@@ -264,8 +273,8 @@ bool CalibreSyncManager::moveBookFiles(const String &from, const String &to) {
   if (from == to) {
     return true;
   }
-  SD_MMC.remove(to);
-  if (!SD_MMC.rename(from, to)) {
+  sd().remove(to);
+  if (!sd().rename(from, to)) {
     Serial.printf("%s move %s -> %s failed\n", kLogTag, from.c_str(), to.c_str());
     return false;
   }
@@ -278,14 +287,14 @@ bool CalibreSyncManager::moveBookFiles(const String &from, const String &to) {
   sidecarsFor(from, fromSidecars);
   sidecarsFor(to, toSidecars);
   for (int i = 0; i < 3; ++i) {
-    if (!SD_MMC.exists(fromSidecars[i])) {
+    if (!sd().exists(fromSidecars[i])) {
       continue;
     }
-    SD_MMC.remove(toSidecars[i]);
-    if (!SD_MMC.rename(fromSidecars[i], toSidecars[i])) {
+    sd().remove(toSidecars[i]);
+    if (!sd().rename(fromSidecars[i], toSidecars[i])) {
       // Drop the stale sidecar rather than leave it pointing at a book that is
       // no longer there; the device rebuilds both index and progress on demand.
-      SD_MMC.remove(fromSidecars[i]);
+      sd().remove(fromSidecars[i]);
       Serial.printf("%s sidecar move failed, dropped %s\n", kLogTag,
                     fromSidecars[i].c_str());
     }
@@ -297,11 +306,11 @@ void CalibreSyncManager::removeBookFiles(const String &path) {
   if (path.isEmpty()) {
     return;
   }
-  SD_MMC.remove(path);
+  sd().remove(path);
   String sidecars[3];
   sidecarsFor(path, sidecars);
   for (int i = 0; i < 3; ++i) {
-    SD_MMC.remove(sidecars[i]);
+    sd().remove(sidecars[i]);
   }
 }
 
@@ -431,8 +440,8 @@ String CalibreSyncManager::serializeManifest(
 bool CalibreSyncManager::downloadTo(const String &url, const String &path,
                                     const net::HttpAuth &auth) {
   const String tmpPath = path + ".tmp";
-  SD_MMC.remove(tmpPath);
-  File out = SD_MMC.open(tmpPath, FILE_WRITE);
+  sd().remove(tmpPath);
+  File out = sd().open(tmpPath, FILE_WRITE);
   if (!out) {
     Serial.printf("%s could not open %s for write\n", kLogTag, tmpPath.c_str());
     return false;
@@ -462,15 +471,15 @@ bool CalibreSyncManager::downloadTo(const String &url, const String &path,
   if (!res.ok || !writeOk) {
     Serial.printf("%s download failed url=%s status=%d err=%s\n", kLogTag,
                   url.c_str(), res.statusCode, res.error.c_str());
-    SD_MMC.remove(tmpPath);
+    sd().remove(tmpPath);
     return false;
   }
 
-  SD_MMC.remove(path);
-  if (!SD_MMC.rename(tmpPath, path)) {
+  sd().remove(path);
+  if (!sd().rename(tmpPath, path)) {
     Serial.printf("%s rename %s -> %s failed\n", kLogTag, tmpPath.c_str(),
                   path.c_str());
-    SD_MMC.remove(tmpPath);
+    sd().remove(tmpPath);
     return false;
   }
   return true;
@@ -567,7 +576,7 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
   // 3. read the on-SD manifest.
   std::vector<calibresync::ManifestEntry> manifest;
   {
-    File mf = SD_MMC.open(manifestPath());
+    File mf = sd().open(manifestPath());
     if (mf && !mf.isDirectory()) {
       String body;
       body.reserve(static_cast<size_t>(mf.size()) + 1);
@@ -725,8 +734,8 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
   {
     const String body = serializeManifest(nextEntries, nextTitles);
     const String tmpPath = String(manifestPath()) + ".tmp";
-    SD_MMC.remove(tmpPath);
-    File mf = SD_MMC.open(tmpPath, FILE_WRITE);
+    sd().remove(tmpPath);
+    File mf = sd().open(tmpPath, FILE_WRITE);
     if (mf) {
       const size_t written = mf.print(body);
       // fsync the manifest data before the rename: a directory entry that
@@ -739,12 +748,12 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
         Serial.printf("%s manifest write short (%u/%u); keeping previous\n",
                       kLogTag, static_cast<unsigned>(written),
                       static_cast<unsigned>(body.length()));
-        SD_MMC.remove(tmpPath);
+        sd().remove(tmpPath);
       } else {
-        SD_MMC.remove(manifestPath());
-        if (!SD_MMC.rename(tmpPath, manifestPath())) {
+        sd().remove(manifestPath());
+        if (!sd().rename(tmpPath, manifestPath())) {
           Serial.printf("%s manifest rename failed\n", kLogTag);
-          SD_MMC.remove(tmpPath);
+          sd().remove(tmpPath);
         }
       }
     } else {
