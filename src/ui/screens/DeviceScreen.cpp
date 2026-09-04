@@ -29,20 +29,26 @@ namespace screens {
         ui::Rect storageButton;
         ui::Rect encryptionButton;
         ui::Grid actions;
+        // Slot budget: two status tiles plus five actions. Both layouts below size
+        // their grids for exactly that -- adding another action means growing the
+        // row count here, otherwise the extra button lands in a row that does not
+        // exist and is drawn clipped off the bottom of the screen.
         if (content.w >= 280) {
-            constexpr int16_t statusHeight = 60;
+            constexpr int16_t statusHeight = 52;
             const int16_t statusWidth = static_cast<int16_t>((content.w - gap) / 2);
             storageButton = {content.x, content.y, statusWidth, statusHeight};
             encryptionButton = {static_cast<int16_t>(content.x + statusWidth + gap), content.y,
                                 static_cast<int16_t>(content.w - statusWidth - gap), statusHeight};
             const int16_t actionsY = static_cast<int16_t>(content.y + statusHeight + gap);
             const int16_t actionsHeight = static_cast<int16_t>(content.y + content.h - actionsY);
+            // 2 columns x 3 rows = 6 slots for 5 actions.
             actions = {{content.x, actionsY, content.w, actionsHeight},
                        2,
-                       static_cast<int16_t>((actionsHeight - gap) / 2),
+                       static_cast<int16_t>((actionsHeight - gap * 2) / 3),
                        gap};
         } else {
-            ui::Grid all{content, 1, static_cast<int16_t>((content.h - gap * 5) / 6), gap};
+            // Single column: 2 status tiles + 5 actions = 7 rows.
+            ui::Grid all{content, 1, static_cast<int16_t>((content.h - gap * 6) / 7), gap};
             storageButton = all.next();
             encryptionButton = all.next();
             actions = all;
