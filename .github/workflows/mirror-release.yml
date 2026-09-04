@@ -25,8 +25,10 @@ concurrency:
 env:
   UPSTREAM: ionutdecebal/rsvpnano
   PATCH_BRANCH: calibre
-  BUILD_ENV: waveshare_esp32s3       # 3.49" LCD rev1
-  OTA_ASSET: rsvp-nano-ota.bin       # must match OTA_ASSET_NAME for that board
+  BUILD_ENV: waveshare_esp32s3_touch_lcd_349_rev1
+  # Must match Board::Config::OTA_ASSET_NAME for BUILD_ENV, or the device
+  # will not recognise the asset when it checks for an update.
+  OTA_ASSET: rsvp-nano-esp32-s3-touch-lcd-3.49-ota.bin
 
 jobs:
   mirror:
@@ -37,6 +39,9 @@ jobs:
         with:
           ref: calibre
           fetch-depth: 0
+          # HarfBuzz/SheenBidi/PDFio/zlib are submodules; without them the
+          # firmware build fails on a missing hb.h.
+          submodules: recursive
 
       - name: Detect upstream release and merge it in
         id: prep
