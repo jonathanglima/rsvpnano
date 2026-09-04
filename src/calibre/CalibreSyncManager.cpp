@@ -21,6 +21,11 @@ namespace {
 
 constexpr const char *kLogTag = "[calibre-sync]";
 
+// The Calibre tag that routes a book to /library/articles instead of
+// /library/books. Matched case-insensitively (calibreparser::hasTag), because
+// Calibre preserves whatever case the user typed in the tag editor.
+constexpr const char *kArticleTag = "article";
+
 // Cap a single book download. The response is streamed straight to SD (never
 // held in RAM), so this only guards against a runaway/garbage response, not
 // memory. 8 MiB turned out to be too tight -- a few complete-works .rsvp files
@@ -221,25 +226,83 @@ String CalibreSyncManager::sanitizeBaseName(const String &name) {
 }
 
 const char *CalibreSyncManager::targetDirectoryFor(
-    const calibresync::RemoteEntry &remote) {
-  (void)remote;
-  // Default folder routing: all books land in /library/books.
-  //
-  // TODO(future tag rule): when a Calibre tag (e.g. "article") is available on
-  // the resolved book, route those to StoragePaths::kArticleFilesPath
-  // (/library/articles) instead. The tag is not currently surfaced by
-  // CalibreClient::resolveRsvp(), so the rule is left unimplemented -- this
-  // function is the single hook where it will plug in.
-  return StoragePaths::kBookFilesPath;
+    const CalibreClient::RsvpRef &ref) {
+  // The folder IS the distinction: BookLibrary::isArticle() tests nothing but
+  // the /library/articles/ path prefix, and LibraryScreen colours and sizes the
+  // shelf spine from that. So routing here is the whole feature.
+  return calibreparser::hasTag(ref.tags, kArticleTag)
+             ? StoragePaths::kArticleFilesPath
+             : StoragePaths::kBookFilesPath;
 }
 
-String CalibreSyncManager::destinationPath(
-    const calibresync::RemoteEntry &remote) {
-  String base = sanitizeBaseName(remote.title);
+String CalibreSyncManager::destinationPath(const CalibreClient::RsvpRef &ref,
+                                           int id) {
+  String base = sanitizeBaseName(ref.title);
   if (base.isEmpty()) {
-    base = String(remote.id);
+    base = String(id);
   }
-  return String(targetDirectoryFor(remote)) + "/" + base + ".rsvp";
+  return String(targetDirectoryFor(ref)) + "/" + base + ".rsvp";
+}
+
+namespace {
+
+// The per-path sidecars that must travel with a .rsvp. Reading progress lives
+// in <book>.rstate.toml (ReadingProgress::bookStatePathFor) and the prebuilt
+// index in <book>.rsvp.ridx / .rdat -- all derived from the document path, so a
+// bare rename of the .rsvp orphans them: the reader silently restarts the book
+// from word zero and pays for a full reindex.
+void sidecarsFor(const String &path, String out[3]) {
+  const std::string base(path.c_str());
+  out[0] = String(StoragePaths::bookStatePathFor(base).c_str());
+  out[1] = String(StoragePaths::indexedIndexPathFor(base).c_str());
+  out[2] = String(StoragePaths::indexedDataPathFor(base).c_str());
+}
+
+}  // namespace
+
+bool CalibreSyncManager::moveBookFiles(const String &from, const String &to) {
+  if (from == to) {
+    return true;
+  }
+  SD_MMC.remove(to);
+  if (!SD_MMC.rename(from, to)) {
+    Serial.printf("%s move %s -> %s failed\n", kLogTag, from.c_str(), to.c_str());
+    return false;
+  }
+
+  // Sidecars are best-effort: a book that was never opened has no .rstate.toml,
+  // and one that was never indexed has no .ridx/.rdat. A missing sidecar is the
+  // normal case, not a failure -- only the .rsvp rename above is load-bearing.
+  String fromSidecars[3];
+  String toSidecars[3];
+  sidecarsFor(from, fromSidecars);
+  sidecarsFor(to, toSidecars);
+  for (int i = 0; i < 3; ++i) {
+    if (!SD_MMC.exists(fromSidecars[i])) {
+      continue;
+    }
+    SD_MMC.remove(toSidecars[i]);
+    if (!SD_MMC.rename(fromSidecars[i], toSidecars[i])) {
+      // Drop the stale sidecar rather than leave it pointing at a book that is
+      // no longer there; the device rebuilds both index and progress on demand.
+      SD_MMC.remove(fromSidecars[i]);
+      Serial.printf("%s sidecar move failed, dropped %s\n", kLogTag,
+                    fromSidecars[i].c_str());
+    }
+  }
+  return true;
+}
+
+void CalibreSyncManager::removeBookFiles(const String &path) {
+  if (path.isEmpty()) {
+    return;
+  }
+  SD_MMC.remove(path);
+  String sidecars[3];
+  sidecarsFor(path, sidecars);
+  for (int i = 0; i < 3; ++i) {
+    SD_MMC.remove(sidecars[i]);
+  }
 }
 
 String CalibreSyncManager::changeKey(const CalibreClient::RsvpRef &ref) {
@@ -492,6 +555,9 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     // Name files by the book title from /ajax/book (RsvpRef.title). When the
     // title is empty, destinationPath() falls back to the stable book id.
     entry.title = ref.title;
+    // Routing happens here, not at download time: only the RsvpRef carries the
+    // Calibre tags, and the pure diff needs the destination to notice a retag.
+    entry.path = destinationPath(ref, id);
     if (entry.url.isEmpty()) {
       continue;
     }
@@ -523,8 +589,9 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
   const calibresync::SyncPlan plan =
       calibresync::computeSyncPlan(remote, manifest, policy);
   result.unchanged = static_cast<int>(plan.unchanged.size());
-  Serial.printf("%s plan: %u download, %u delete, %u unchanged\n", kLogTag,
-                static_cast<unsigned>(plan.toDownload.size()),
+  Serial.printf("%s plan: %u download, %u move, %u delete, %u unchanged\n",
+                kLogTag, static_cast<unsigned>(plan.toDownload.size()),
+                static_cast<unsigned>(plan.toMove.size()),
                 static_cast<unsigned>(plan.toDelete.size()),
                 static_cast<unsigned>(plan.unchanged.size()));
 
@@ -567,10 +634,18 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     }
     return false;
   };
+  const auto isPlannedMove = [&plan](int id) {
+    for (const calibresync::MoveAction &m : plan.toMove) {
+      if (m.id == id) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   for (const calibresync::ManifestEntry &m : manifest) {
-    if (isPlannedDelete(m.id) || isPlannedDownload(m.id)) {
-      continue;  // handled below (re-download replaces, delete removes)
+    if (isPlannedDelete(m.id) || isPlannedDownload(m.id) || isPlannedMove(m.id)) {
+      continue;  // handled below (re-download/move replaces, delete removes)
     }
     nextEntries.push_back(m);
     // Title is not needed by reconcile; preserve "" rather than re-parse.
@@ -585,10 +660,15 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     if (r == nullptr) {
       continue;
     }
-    const String path = destinationPath(*r);
+    const String path = action.path.isEmpty() ? r->path : action.path;
     report("download", downloadIndex, static_cast<int>(plan.toDownload.size()),
            r->title);
     if (downloadTo(action.url, path, auth)) {
+      // A book that was retagged AND edited lands in the new folder; the copy
+      // in the old one would otherwise linger as a duplicate on the shelf.
+      if (!action.previousPath.isEmpty() && action.previousPath != path) {
+        removeBookFiles(action.previousPath);
+      }
       calibresync::ManifestEntry entry;
       entry.id = action.id;
       entry.key = action.key;
@@ -603,21 +683,45 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     }
   }
 
-  // 6. deletions (Mirror only -- plan.toDelete is empty under Keep).
+  // 6. moves: same bytes, different folder (a retag in Calibre). No network.
+  int moveIndex = 0;
+  for (const calibresync::MoveAction &action : plan.toMove) {
+    ++moveIndex;
+    report("move", moveIndex, static_cast<int>(plan.toMove.size()),
+           action.title);
+    calibresync::ManifestEntry entry;
+    entry.id = action.id;
+    entry.key = action.key;
+    if (moveBookFiles(action.from, action.to)) {
+      entry.path = action.to;
+      ++result.moved;
+      Serial.printf("%s moved id=%d %s -> %s\n", kLogTag, action.id,
+                    action.from.c_str(), action.to.c_str());
+    } else {
+      // Keep pointing at where the file actually is, so the next sync retries
+      // the move instead of believing it already happened.
+      entry.path = action.from;
+      ++result.failed;
+    }
+    nextEntries.push_back(entry);
+    nextTitles.push_back(action.title);
+  }
+
+  // 7. deletions (Mirror only -- plan.toDelete is empty under Keep).
   int deleteIndex = 0;
   for (const calibresync::DeleteAction &action : plan.toDelete) {
     ++deleteIndex;
     report("delete", deleteIndex, static_cast<int>(plan.toDelete.size()),
            action.path);
-    if (!action.path.isEmpty()) {
-      SD_MMC.remove(action.path);
-    }
+    // Sidecars go with it: leaving <book>.rstate.toml and .ridx/.rdat behind
+    // would slowly fill the card with state for books that are gone.
+    removeBookFiles(action.path);
     ++result.deleted;
     Serial.printf("%s deleted id=%d -> %s\n", kLogTag, action.id,
                   action.path.c_str());
   }
 
-  // 7. rewrite the manifest.
+  // 8. rewrite the manifest.
   {
     const String body = serializeManifest(nextEntries, nextTitles);
     const String tmpPath = String(manifestPath()) + ".tmp";
@@ -648,15 +752,16 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     }
   }
 
-  // 8. trigger a library reindex so the device picks up the changes.
+  // 9. trigger a library reindex so the device picks up the changes.
   if (storage_ != nullptr) {
     storage_->refreshBooks();
   }
 
   result.ok = true;
   report("done", result.downloaded, result.downloaded, String());
-  Serial.printf("%s done: %d downloaded, %d deleted, %d unchanged, %d failed\n",
-                kLogTag, result.downloaded, result.deleted, result.unchanged,
+  Serial.printf(
+      "%s done: %d downloaded, %d moved, %d deleted, %d unchanged, %d failed\n",
+      kLogTag, result.downloaded, result.moved, result.deleted, result.unchanged,
                 result.failed);
   return result;
 }

@@ -206,6 +206,117 @@ void test_book_no_formats_at_all() {
   CHECK(ref.url.isEmpty());
 }
 
+void test_book_tags_parsed() {
+  std::printf("test_book_tags_parsed\n");
+  const String json =
+      "{\"title\":\"T\",\"tags\":[\"article\",\"rsvp\"],"
+      "\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"}}";
+  calibreparser::RsvpRef ref;
+  CHECK(calibreparser::parseBookRsvpRef(json, ref));
+  CHECK(ref.tags.size() == 2);
+  CHECK(calibreparser::hasTag(ref.tags, "article"));
+  CHECK(calibreparser::hasTag(ref.tags, "rsvp"));
+  CHECK(!calibreparser::hasTag(ref.tags, "kindle"));
+}
+
+// The live /ajax/book/<id> payload carries "tags" TWICE: the real top-level
+// array and an object of the same name nested in "category_urls". Key order is
+// not guaranteed, so the object must be unmatchable regardless of which comes
+// first -- both orders are exercised here.
+void test_book_tags_ignores_category_urls_object() {
+  std::printf("test_book_tags_ignores_category_urls_object\n");
+  const String arrayFirst =
+      "{\"tags\":[\"article\"],"
+      "\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"},"
+      "\"category_urls\":{\"tags\":{\"article\":\"/ajax/books_in/74/35/lib\"}}}";
+  calibreparser::RsvpRef ref;
+  CHECK(calibreparser::parseBookRsvpRef(arrayFirst, ref));
+  CHECK(ref.tags.size() == 1);
+  CHECK(calibreparser::hasTag(ref.tags, "article"));
+
+  const String objectFirst =
+      "{\"category_urls\":{\"tags\":{\"novel\":\"/ajax/books_in/74/35/lib\"}},"
+      "\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"},"
+      "\"tags\":[\"article\"]}";
+  calibreparser::RsvpRef ref2;
+  CHECK(calibreparser::parseBookRsvpRef(objectFirst, ref2));
+  CHECK(ref2.tags.size() == 1);
+  CHECK(calibreparser::hasTag(ref2.tags, "article"));
+  CHECK(!calibreparser::hasTag(ref2.tags, "novel"));
+}
+
+void test_book_tags_absent_or_empty() {
+  std::printf("test_book_tags_absent_or_empty\n");
+  const String noTags =
+      "{\"title\":\"T\",\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"}}";
+  calibreparser::RsvpRef ref;
+  CHECK(calibreparser::parseBookRsvpRef(noTags, ref));
+  CHECK(ref.tags.empty());
+  CHECK(!calibreparser::hasTag(ref.tags, "article"));
+
+  const String emptyTags =
+      "{\"tags\":[],\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"}}";
+  calibreparser::RsvpRef ref2;
+  CHECK(calibreparser::parseBookRsvpRef(emptyTags, ref2));
+  CHECK(ref2.tags.empty());
+}
+
+// Calibre stores tags with whatever case the user typed, so routing must not
+// hinge on it.
+void test_has_tag_is_case_insensitive() {
+  std::printf("test_has_tag_is_case_insensitive\n");
+  const String json =
+      "{\"tags\":[\"Article\"],\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"}}";
+  calibreparser::RsvpRef ref;
+  CHECK(calibreparser::parseBookRsvpRef(json, ref));
+  CHECK(calibreparser::hasTag(ref.tags, "article"));
+  CHECK(calibreparser::hasTag(ref.tags, "ARTICLE"));
+  // Prefix must not count: "art" is a different tag.
+  CHECK(!calibreparser::hasTag(ref.tags, "art"));
+}
+
+// Tags with escapes and separators must survive the array walk intact,
+// including a value that itself contains a quote.
+void test_book_tags_with_escapes() {
+  std::printf("test_book_tags_with_escapes\n");
+  const String json =
+      "{\"tags\":[\"sci-fi\",\"say \\\"hi\\\"\",\"a/b\"],"
+      "\"other_formats\":{\"rsvp\":\"/get/rsvp/1/lib\"}}";
+  calibreparser::RsvpRef ref;
+  CHECK(calibreparser::parseBookRsvpRef(json, ref));
+  CHECK(ref.tags.size() == 3);
+  CHECK(calibreparser::hasTag(ref.tags, "sci-fi"));
+  CHECK(calibreparser::hasTag(ref.tags, "say \"hi\""));
+  CHECK(calibreparser::hasTag(ref.tags, "a/b"));
+}
+
+// Live payload captured from a real calibre-server (book tagged article+rsvp).
+// This is the one test that proves the parser against Calibre's actual output
+// rather than a hand-written literal -- notably that the real "tags" duplicate
+// under category_urls is present and still does not fool the array scoping.
+void test_live_article_fixture() {
+  std::printf("test_live_article_fixture\n");
+  const std::string fixture = loadFixture("book-article.json");
+  if (fixture.empty()) {
+    std::printf("  (skipped: tools/calibre-sync/fixtures/book-article.json absent)\n");
+    return;
+  }
+  const String json(fixture.c_str());
+
+  // The object-shaped decoy really is in there; if it ever stops being, this
+  // test has quietly lost its point.
+  CHECK(json.indexOf("\"category_urls\"") >= 0);
+
+  calibreparser::RsvpRef ref;
+  CHECK(calibreparser::parseBookRsvpRef(json, ref));
+  CHECK_STR_EQ("/get/rsvp/178/CalibreLibrary", ref.url.c_str());
+  CHECK(ref.size == 39342);
+  CHECK_STR_EQ("A guide to the anatomy of effective commerce agents", ref.title.c_str());
+  CHECK(ref.tags.size() == 2);
+  CHECK(calibreparser::hasTag(ref.tags, "article"));
+  CHECK(calibreparser::hasTag(ref.tags, "rsvp"));
+}
+
 void test_basic_auth_header() {
   std::printf("test_basic_auth_header\n");
   net::HttpAuth auth;
@@ -230,6 +341,12 @@ int main() {
   test_book_rsvp_falls_back_to_top_last_modified();
   test_book_no_rsvp_returns_not_found();
   test_book_no_formats_at_all();
+  test_book_tags_parsed();
+  test_book_tags_ignores_category_urls_object();
+  test_book_tags_absent_or_empty();
+  test_has_tag_is_case_insensitive();
+  test_book_tags_with_escapes();
+  test_live_article_fixture();
   test_basic_auth_header();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

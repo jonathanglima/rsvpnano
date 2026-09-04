@@ -10,7 +10,7 @@
 //     -> CalibreClient.search(query)
 //     -> CalibreClient.resolveRsvp(id, ref)
 //     -> calibresync::computeSyncPlan(...)          (pure core, host-tested)
-//     -> net::get(url, sink) streaming to SD
+//     -> net::get(url, sink) streaming to SD, or a rename for a retag-only move
 //     -> rewrite /books/.calibre-sync.json manifest
 //     -> StorageManager::refreshBooks() reindex
 //
@@ -41,9 +41,12 @@ class CalibreSyncManager {
   struct Result {
     bool ok = false;
     int downloaded = 0;
+    int moved = 0;      // retagged books relocated between books/ and articles/
     int deleted = 0;
     int unchanged = 0;
-    int failed = 0;     // downloads that errored (counted, sync continues)
+    int failed = 0;     // downloads and moves that errored (counted, sync
+                        // continues; a failed move keeps the old path so the
+                        // next run retries it)
     String error;       // set when ok == false (a fatal, abort-the-run error)
   };
 
@@ -92,16 +95,27 @@ class CalibreSyncManager {
   // epoch parsing -- the device has no reliable clock.
   static String changeKey(const CalibreClient::RsvpRef &ref);
 
-  // /books/books/<sanitized title or id>.rsvp. Folder routing default is
-  // /books/books. TODO(future tag rule): route to /books/articles when a
-  // Calibre tag (e.g. "article") is present on the book. The tag rule is
-  // intentionally NOT implemented here yet -- only the hook is left. See
-  // targetDirectoryFor().
-  static String destinationPath(const calibresync::RemoteEntry &remote);
+  // <routed folder>/<sanitized title or id>.rsvp. Takes the resolved RsvpRef
+  // rather than a RemoteEntry because routing reads the book's Calibre tags,
+  // which only the ref carries; id is the filename fallback for a book with an
+  // empty title.
+  static String destinationPath(const CalibreClient::RsvpRef &ref, int id);
 
-  // Folder routing hook. Today always returns StoragePaths::kBookFilesPath
-  // (/books/books). The future articles rule plugs in here.
-  static const char *targetDirectoryFor(const calibresync::RemoteEntry &remote);
+  // Folder routing: StoragePaths::kArticleFilesPath for a book tagged
+  // kArticleTag, StoragePaths::kBookFilesPath otherwise. The device draws the
+  // two differently (BookLibrary::isArticle() keys purely off the
+  // /library/articles/ prefix), so the folder IS the article/book distinction.
+  static const char *targetDirectoryFor(const CalibreClient::RsvpRef &ref);
+
+  // Renames a book's .rsvp together with its per-path sidecars. Reading
+  // progress (.rstate.toml) and the prebuilt index (.ridx/.rdat) are keyed by
+  // the document path, so moving only the .rsvp would silently reset the
+  // reader's position and force a reindex. Missing sidecars are not an error.
+  static bool moveBookFiles(const String &from, const String &to);
+
+  // Deletes a book's .rsvp and the same sidecar set. Used by both the delete
+  // phase and the relocate-after-download cleanup.
+  static void removeBookFiles(const String &path);
 
   // sanitize a title/id into a filesystem-safe base name (no extension),
   // mirroring CompanionSyncManager::sanitizeFilename().

@@ -5,7 +5,9 @@
 // no SD, no clock -- just the diff.
 //
 // Coverage: new id, changed key, unchanged, deleted-with-Mirror (planned for
-// delete), deleted-with-Keep (NOT deleted), empty remote, empty manifest.
+// delete), deleted-with-Keep (NOT deleted), empty remote, empty manifest, and
+// the folder-routing axis: retag-only moves, retag+edit downloads that report
+// the old path, and the unrouted caller that must keep the key-only behaviour.
 
 #include <cstdio>
 #include <string>
@@ -29,6 +31,20 @@ static int g_checks = 0;
       ++g_failures;                                                 \
       std::printf("  FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
     }                                                               \
+  } while (0)
+
+// Same shape as the macro in test_calibre_parse.cpp; the two host tests are
+// standalone binaries with no shared header.
+#define CHECK_STR_EQ(expected, actual)                                  \
+  do {                                                                  \
+    ++g_checks;                                                         \
+    const std::string e = (expected);                                   \
+    const std::string a = (actual);                                     \
+    if (e != a) {                                                       \
+      ++g_failures;                                                     \
+      std::printf("  FAIL %s:%d: expected \"%s\" got \"%s\"\n", __FILE__, \
+                  __LINE__, e.c_str(), a.c_str());                      \
+    }                                                                   \
   } while (0)
 
 namespace {
@@ -58,6 +74,31 @@ bool downloadHas(const SyncPlan &plan, int id) {
     }
   }
   return false;
+}
+
+RemoteEntry routed(int id, const char *key, const char *path,
+                   const char *title = "T") {
+  RemoteEntry r = remote(id, key, title);
+  r.path = path;
+  return r;
+}
+
+const calibresync::MoveAction *moveFor(const SyncPlan &plan, int id) {
+  for (const auto &m : plan.toMove) {
+    if (m.id == id) {
+      return &m;
+    }
+  }
+  return nullptr;
+}
+
+const calibresync::DownloadAction *downloadFor(const SyncPlan &plan, int id) {
+  for (const auto &a : plan.toDownload) {
+    if (a.id == id) {
+      return &a;
+    }
+  }
+  return nullptr;
 }
 
 bool deleteHas(const SyncPlan &plan, int id) {
@@ -185,6 +226,131 @@ void test_both_empty() {
   CHECK(plan.unchanged.empty());
 }
 
+// Tagging a book "article" in Calibre does not touch the .rsvp, so the
+// change-key is byte-identical. Only the destination folder moves -- and a
+// download here would re-fetch bytes the device already has.
+void test_retag_moves_without_download() {
+  std::printf("test_retag_moves_without_download\n");
+  std::vector<RemoteEntry> r{
+      routed(1, "100|t", "/library/articles/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+
+  CHECK(plan.toDownload.empty());
+  CHECK(plan.unchanged.empty());
+  CHECK(plan.toDelete.empty());
+  CHECK(plan.toMove.size() == 1);
+  const auto *move = moveFor(plan, 1);
+  CHECK(move != nullptr);
+  if (move != nullptr) {
+    CHECK_STR_EQ("/library/books/A.rsvp", move->from.c_str());
+    CHECK_STR_EQ("/library/articles/A.rsvp", move->to.c_str());
+    CHECK_STR_EQ("100|t", move->key.c_str());
+  }
+}
+
+void test_same_path_and_key_is_unchanged() {
+  std::printf("test_same_path_and_key_is_unchanged\n");
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.unchanged.size() == 1);
+  CHECK(plan.toMove.empty());
+  CHECK(plan.toDownload.empty());
+}
+
+// Retagged AND edited: the bytes changed, so it must be a download -- but to
+// the NEW folder, with the old copy reported for cleanup so the shelf does not
+// end up showing the book twice.
+void test_retag_with_changed_key_downloads_and_reports_old_path() {
+  std::printf("test_retag_with_changed_key_downloads_and_reports_old_path\n");
+  std::vector<RemoteEntry> r{
+      routed(1, "200|t2", "/library/articles/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t1", "/library/books/A.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+
+  CHECK(plan.toMove.empty());
+  CHECK(plan.toDownload.size() == 1);
+  const auto *action = downloadFor(plan, 1);
+  CHECK(action != nullptr);
+  if (action != nullptr) {
+    CHECK_STR_EQ("/library/articles/A.rsvp", action->path.c_str());
+    CHECK_STR_EQ("/library/books/A.rsvp", action->previousPath.c_str());
+  }
+}
+
+// Same folder, changed bytes: previousPath must stay empty, or the caller would
+// delete the file it just downloaded.
+void test_changed_key_same_path_has_no_previous_path() {
+  std::printf("test_changed_key_same_path_has_no_previous_path\n");
+  std::vector<RemoteEntry> r{routed(1, "200|t2", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t1", "/library/books/A.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  const auto *action = downloadFor(plan, 1);
+  CHECK(action != nullptr);
+  if (action != nullptr) {
+    CHECK(action->previousPath.isEmpty());
+    CHECK_STR_EQ("/library/books/A.rsvp", action->path.c_str());
+  }
+}
+
+void test_new_book_carries_path_and_no_previous() {
+  std::printf("test_new_book_carries_path_and_no_previous\n");
+  std::vector<RemoteEntry> r{
+      routed(7, "100|t", "/library/articles/New.rsvp", "New")};
+  std::vector<ManifestEntry> m;
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  const auto *action = downloadFor(plan, 7);
+  CHECK(action != nullptr);
+  if (action != nullptr) {
+    CHECK_STR_EQ("/library/articles/New.rsvp", action->path.c_str());
+    CHECK(action->previousPath.isEmpty());
+  }
+  CHECK(plan.toMove.empty());
+}
+
+// A caller that does not route (RemoteEntry::path left empty) must get exactly
+// the pre-move behaviour, whatever the manifest says the path is.
+void test_unrouted_caller_ignores_path_axis() {
+  std::printf("test_unrouted_caller_ignores_path_axis\n");
+  std::vector<RemoteEntry> r{remote(1, "100|t")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/Any.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.unchanged.size() == 1);
+  CHECK(plan.toMove.empty());
+  CHECK(plan.toDownload.empty());
+}
+
+// Untagging is the same operation in reverse -- articles must be able to go
+// back to being books.
+void test_move_back_from_articles_to_books() {
+  std::printf("test_move_back_from_articles_to_books\n");
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/articles/A.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  const auto *move = moveFor(plan, 1);
+  CHECK(move != nullptr);
+  if (move != nullptr) {
+    CHECK_STR_EQ("/library/articles/A.rsvp", move->from.c_str());
+    CHECK_STR_EQ("/library/books/A.rsvp", move->to.c_str());
+  }
+}
+
+// A move and a delete in the same run must not interfere: both ids are keyed
+// separately and the mover must not resurrect the deleted one.
+void test_move_and_delete_coexist() {
+  std::printf("test_move_and_delete_coexist\n");
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/articles/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp"),
+                               manifest(2, "200|t", "/library/books/B.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.toMove.size() == 1);
+  CHECK(moveFor(plan, 1) != nullptr);
+  CHECK(plan.toDelete.size() == 1);
+  CHECK(deleteHas(plan, 2));
+  CHECK(!deleteHas(plan, 1));
+}
+
 }  // namespace
 
 int main() {
@@ -196,6 +362,14 @@ int main() {
   test_empty_remote();
   test_empty_manifest();
   test_both_empty();
+  test_retag_moves_without_download();
+  test_same_path_and_key_is_unchanged();
+  test_retag_with_changed_key_downloads_and_reports_old_path();
+  test_changed_key_same_path_has_no_previous_path();
+  test_new_book_carries_path_and_no_previous();
+  test_unrouted_caller_ignores_path_axis();
+  test_move_back_from_articles_to_books();
+  test_move_and_delete_coexist();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   if (g_failures == 0) {

@@ -25,9 +25,14 @@
 //   GET /ajax/search?query=<q>&library_id=<lib>
 //     {"book_ids":[1,...],"num":N,"total_num":N,"offset":0}
 //   GET /ajax/book/<id>?library_id=<lib>   (format names are LOWERCASE)
-//     {... "other_formats":{"rsvp":"/get/rsvp/<id>/<lib>"},
+//     {... "tags":["article","rsvp"],
+//          "other_formats":{"rsvp":"/get/rsvp/<id>/<lib>"},
 //          "format_metadata":{"rsvp":{"size":<int>,"mtime":"<iso w/ frac sec>"}},
 //          "last_modified":"<iso, no frac sec>"}
+//     CAUTION: "tags" appears TWICE in this payload -- the real array at top
+//     level, and again inside "category_urls" as an OBJECT
+//     ({"tags":{"article":"/ajax/books_in/..."}}). Key order is not guaranteed,
+//     so the parser must take the first "tags" whose value is an array.
 //   Download: GET /get/rsvp/<book_id>/<library_id>
 // Note: library_id is a ?query param on /ajax/ URLs but a path segment in /get/.
 
@@ -48,7 +53,13 @@ struct RsvpRef {
                         // last_modified; stored raw as the manifest change-key
   String title;         // top-level book title; used for the on-SD filename
                         // (falls back to the book id when empty)
+  std::vector<String> tags;  // top-level tags[]; drives folder routing
+                             // (see CalibreSyncManager::targetDirectoryFor)
 };
+
+// Case-insensitive membership test over a parsed tags list. Calibre preserves
+// the case the user typed, so "Article" and "article" must both match.
+bool hasTag(const std::vector<String> &tags, const char *tag);
 
 // Extracts default_library from /ajax/library-info. Returns true when a
 // non-empty default_library was found.
@@ -60,8 +71,8 @@ bool parseSearchBookIds(const String &json, std::vector<int> &out);
 
 // Extracts the RSVP format reference from an /ajax/book/<id> payload. Returns
 // true only when other_formats.rsvp exists and is non-empty; size/lastModified
-// are filled best-effort. A book with no "rsvp" key returns false and leaves
-// out.url empty (the not-found case -- must not crash).
+// and tags are filled best-effort. A book with no "rsvp" key returns false and
+// leaves out.url empty (the not-found case -- must not crash).
 bool parseBookRsvpRef(const String &json, RsvpRef &out);
 
 }  // namespace calibreparser

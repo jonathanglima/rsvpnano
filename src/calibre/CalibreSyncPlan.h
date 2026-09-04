@@ -41,6 +41,10 @@ struct RemoteEntry {
   String key;    // e.g. "123456|2024-05-06T07:08:09.528479+00:00"
   String url;    // absolute (or base-relative) download URL for the .rsvp
   String title;  // best-effort title used for the on-SD filename
+  String path;   // desired absolute SD path, decided by the caller from the
+                 // book's tags (see CalibreSyncManager::destinationPath). Left
+                 // EMPTY by callers that do not route -- the core then ignores
+                 // the path axis entirely and diffs on the change-key alone.
 };
 
 // One book as recorded in the on-SD manifest (/books/.calibre-sync.json).
@@ -57,6 +61,10 @@ struct DownloadAction {
   String key;
   String url;
   String title;
+  String path;          // where the download must land (may differ from the
+                        // manifest path when the book was retagged)
+  String previousPath;  // where it currently sits, "" when the book is new;
+                        // the caller removes this file once the new one lands
 };
 
 // A book that must be removed: present in the manifest but absent from the
@@ -66,9 +74,23 @@ struct DeleteAction {
   String path;
 };
 
+// A book whose bytes are unchanged but which belongs in a different folder than
+// where it currently sits -- the retag case: adding "article" in Calibre routes
+// the book from /library/books to /library/articles without touching the .rsvp,
+// so the change-key is identical and a download would be pure waste. The file
+// (and its sidecars) is renamed instead.
+struct MoveAction {
+  int id = 0;
+  String key;  // unchanged; carried so the manifest rewrite keeps it
+  String from;
+  String to;
+  String title;
+};
+
 // The reconcile result. unchanged is reported for observability/logging.
 struct SyncPlan {
   std::vector<DownloadAction> toDownload;
+  std::vector<MoveAction> toMove;
   std::vector<DeleteAction> toDelete;
   std::vector<int> unchanged;  // ids whose key matched the manifest
 };
@@ -96,11 +118,16 @@ inline bool remoteHasId(const std::vector<RemoteEntry> &remote, int id) {
 
 // The pure reconcile: diff the remote view against the on-SD manifest.
 //
-//   * id in remote, not in manifest                  -> toDownload (new)
-//   * id in both, keys differ (raw string compare)   -> toDownload (changed)
-//   * id in both, keys equal                          -> unchanged
-//   * id in manifest, not in remote, policy == Mirror -> toDelete
-//   * id in manifest, not in remote, policy == Keep   -> (left alone)
+//   * id in remote, not in manifest                     -> toDownload (new)
+//   * id in both, keys differ (raw string compare)      -> toDownload (changed)
+//   * id in both, keys equal, paths differ              -> toMove (retagged)
+//   * id in both, keys equal, same path                 -> unchanged
+//   * id in manifest, not in remote, policy == Mirror   -> toDelete
+//   * id in manifest, not in remote, policy == Keep     -> (left alone)
+//
+// The path axis is only consulted when the caller populated RemoteEntry::path.
+// An empty path means "caller does no folder routing", and the diff collapses
+// to the original key-only behaviour.
 //
 // No I/O, no clock, no allocation beyond the output vectors.
 inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
@@ -108,18 +135,40 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
                                 DeletionPolicy policy) {
   SyncPlan plan;
 
-  // Pass 1: walk the remote view, deciding download vs unchanged.
+  // Pass 1: walk the remote view, deciding download vs move vs unchanged.
   for (const RemoteEntry &r : remote) {
     const ManifestEntry *existing = findManifestEntry(manifest, r.id);
+    // A routed path that matches nothing on SD only matters while the bytes are
+    // current; a changed key re-downloads to the new location anyway.
+    const bool routed = !r.path.isEmpty();
+    const bool relocated = routed && existing != nullptr && existing->path != r.path;
+
     if (existing != nullptr && existing->key == r.key) {
-      plan.unchanged.push_back(r.id);
+      if (!relocated) {
+        plan.unchanged.push_back(r.id);
+        continue;
+      }
+      MoveAction move;
+      move.id = r.id;
+      move.key = r.key;
+      move.from = existing->path;
+      move.to = r.path;
+      move.title = r.title;
+      plan.toMove.push_back(move);
       continue;
     }
+
     DownloadAction action;
     action.id = r.id;
     action.key = r.key;
     action.url = r.url;
     action.title = r.title;
+    action.path = r.path;
+    // Only worth reporting when it actually differs -- otherwise the caller
+    // would delete the file it just wrote.
+    if (relocated) {
+      action.previousPath = existing->path;
+    }
     plan.toDownload.push_back(action);
   }
 

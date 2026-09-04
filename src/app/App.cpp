@@ -682,6 +682,7 @@ void App::runBackgroundJob() {
                          settingsStore_.secrets().wifiPassword.c_str());
         if (result.ok) {
             const std::string detail = std::to_string(result.downloaded) + " new, "
+                                     + std::to_string(result.moved) + " moved, "
                                      + std::to_string(result.deleted) + " removed, "
                                      + std::to_string(result.failed) + " failed";
             copyText(complete.line1, "Calibre sync done");

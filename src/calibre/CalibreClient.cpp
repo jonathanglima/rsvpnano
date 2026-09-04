@@ -25,6 +25,12 @@ bool isAsciiWhitespace(char c) {
   }
 }
 
+// Local rather than text/AsciiText.h on purpose: that header is C++20
+// (<expected>, <concepts>) and run_host_test.sh builds this TU with -std=c++17.
+char asciiLower(char c) {
+  return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
 // Copied in spirit from ReleaseParser::jsonUnescape -- decode the JSON string
 // escapes Calibre emits (notably "\/" in URLs).
 String jsonUnescape(const String &input) {
@@ -165,7 +171,97 @@ bool extractUintValue(const String &json, const char *key, size_t searchStart, s
   return true;
 }
 
+// Reads a JSON array of strings whose opening '[' sits at arrayStart. Values
+// are appended to out; non-string tokens are skipped defensively rather than
+// aborting, matching parseSearchBookIds().
+void parseStringArrayAt(const String &json, int arrayStart, std::vector<String> &out) {
+  int pos = arrayStart + 1;  // step past '['
+  while (static_cast<size_t>(pos) < json.length()) {
+    pos = skipWhitespace(json, pos);
+    if (static_cast<size_t>(pos) >= json.length()) {
+      return;
+    }
+    const char c = json[pos];
+    if (c == ']') {
+      return;
+    }
+    if (c == ',') {
+      ++pos;
+      continue;
+    }
+    if (c != '"') {
+      return;  // unexpected token -- stop defensively
+    }
+    String value;
+    if (!parseJsonStringAt(json, pos, value)) {
+      return;
+    }
+    if (!value.isEmpty()) {
+      out.push_back(value);
+    }
+    // Walk past the closing quote of the literal we just read.
+    ++pos;
+    bool escaping = false;
+    while (static_cast<size_t>(pos) < json.length()) {
+      const char ch = json[pos++];
+      if (escaping) {
+        escaping = false;
+      } else if (ch == '\\') {
+        escaping = true;
+      } else if (ch == '"') {
+        break;
+      }
+    }
+  }
+}
+
+// Fills out with the first "key" in json whose value is an ARRAY of strings.
+//
+// Scoping by value shape rather than by position is deliberate: /ajax/book/<id>
+// carries "tags" twice -- the real top-level array, and again under
+// "category_urls" as an object of tag -> browse URL. Calibre does not guarantee
+// key order, so taking the first textual match would be a coin flip. Requiring
+// '[' makes the object occurrence unmatchable.
+bool extractStringArray(const String &json, const char *key, std::vector<String> &out) {
+  out.clear();
+  size_t from = 0;
+  while (true) {
+    int keyPos = -1;
+    const int afterColon = colonAfterKey(json, key, from, &keyPos);
+    if (afterColon < 0) {
+      return false;
+    }
+    const int valueStart = skipWhitespace(json, afterColon);
+    if (static_cast<size_t>(valueStart) < json.length() && json[valueStart] == '[') {
+      parseStringArrayAt(json, valueStart, out);
+      return true;
+    }
+    // Wrong shape (an object, a string, ...) -- keep looking past this key.
+    from = static_cast<size_t>(keyPos) + 1;
+  }
+}
+
 }  // namespace
+
+bool hasTag(const std::vector<String> &tags, const char *tag) {
+  const String needle(tag);
+  for (const String &candidate : tags) {
+    if (candidate.length() != needle.length()) {
+      continue;
+    }
+    bool same = true;
+    for (size_t i = 0; i < needle.length(); ++i) {
+      if (asciiLower(candidate[i]) != asciiLower(needle[i])) {
+        same = false;
+        break;
+      }
+    }
+    if (same) {
+      return true;
+    }
+  }
+  return false;
+}
 
 bool parseLibraryInfo(const String &json, LibraryInfo &out) {
   out = LibraryInfo();
@@ -250,6 +346,10 @@ bool parseBookRsvpRef(const String &json, RsvpRef &out) {
   if (extractStringValue(json, "title", 0, title) && !title.isEmpty()) {
     out.title = title;
   }
+
+  // Tags drive folder routing (books vs articles) in CalibreSyncManager. Absent
+  // or malformed tags are not an error: the book simply routes to the default.
+  extractStringArray(json, "tags", out.tags);
 
   // Best-effort metadata. Calibre keys formats LOWERCASE everywhere, so the
   // per-format block is format_metadata.rsvp.{size,mtime}. format_metadata holds
