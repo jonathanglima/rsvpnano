@@ -36,6 +36,18 @@ dependencyResolutionManagement {
 				includeModule("com.yarnpkg", "yarn")
 			}
 		}
+		ivy("https://github.com/WebAssembly/binaryen/releases/download") {
+			name = "Binaryen"
+			patternLayout {
+				artifact("version_[revision]/[artifact]-version_[revision]-[classifier].[ext]")
+			}
+			metadataSources {
+				artifact()
+			}
+			content {
+				includeModule("com.github.webassembly", "binaryen")
+			}
+		}
 	}
 }
 
@@ -44,7 +56,9 @@ rootProject.name = "rsvpnano"
 include(":shared")
 include(":conversionCore")
 include(":androidApp")
+include(":webApp")
 
-project(":shared").projectDir = file("RSVPNanoCompanion/shared")
-project(":conversionCore").projectDir = file("RSVPNanoCompanion/conversionCore")
-project(":androidApp").projectDir = file("RSVPNanoCompanion/androidApp")
+project(":shared").projectDir = file("companion/shared")
+project(":conversionCore").projectDir = file("companion/conversion")
+project(":androidApp").projectDir = file("companion/apps/android")
+project(":webApp").projectDir = file("companion/apps/web")

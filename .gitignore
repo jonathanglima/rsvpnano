@@ -1,6 +1,7 @@
 .pio
 .gradle/
 .kotlin/
+kotlin-js-store/
 .local/
 build/
 **/build/
@@ -21,19 +22,23 @@ __pycache__/
 .vscode/ipch
 tools/*.epub
 tools/*.rsvp
-RSVPNanoCompanion/testdata/conversion/from-nano/
+companion/testdata/conversion/from-nano/
 *.rsvp.tmp
 *.rsvp.failed
 *.rsvp.converting
 *.ridx
 *.rdat
-web/firmware/*.bin
-RSVPNanoCompanion/web/generated/
-web/generated/
-.cache/
-compile_commands.json
 logs/
+.cache/
+.tmp/
+compile_commands.json
+src/idf_component.yml
+benchmark/logs/
+benchmark/summary.md
 
 # calibre host test artifacts
 test/calibre/vendor/
 test/calibre/build/
+
+# oh-my-claudecode local agent state
+.omc/

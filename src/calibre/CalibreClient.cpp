@@ -299,7 +299,7 @@ bool parseBookRsvpRef(const String &json, RsvpRef &out) {
 // The networking methods use Serial + net::HttpFetch, which only exist in the
 // Arduino build. Guarded out of the host unit test (which compiles this TU only
 // to reach the pure calibreparser functions above), mirroring the guard in
-// src/net/HttpFetch.cpp. The class is declared unconditionally in the header;
+// src/network/HttpFetch.cpp. The class is declared unconditionally in the header;
 // only its definitions are device-only.
 #if defined(ARDUINO) || defined(ESP32)
 

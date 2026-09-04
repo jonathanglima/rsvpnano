@@ -1,108 +1,155 @@
 #include "board/BoardPower.h"
+#include <esp_log.h>
 
 #include <Wire.h>
+#include <algorithm>
 
-#include "drivers/power/axp2101/Axp2101.h"
-#include "drivers/gpio/Tca9554.h"
+#include "drivers/gpio/tca9554/Tca9554.h"
+#include "platforms/waveshare_amoled_18/WaveshareAmoled18.h"
+
+#define XPOWERS_CHIP_AXP2101
+#include <XPowersLib.h>
 
 namespace {
 
-struct PowerContext {
-  bool tca9554Sequenced = false;
-};
+    constexpr uint32_t kPowerKeyPollIntervalMs = 20;
+    XPowersAXP2101 gPmu;
+    bool gPmuReady = false;
+    bool gPowerButtonHeld = false;
+    uint32_t gLastPowerKeyPollMs = 0;
 
-PowerContext gPower;
+    void configureIoExpander() {
+        BoardDrivers::Tca9554::PortState state = {};
+        if (!BoardDrivers::Tca9554::readPortState(Wire, WaveshareAmoled18::Tca9554Wiring::kAddress, state,
+                                                  WaveshareAmoled18::Tca9554Wiring::kReleaseBusBeforeRead)) {
+            ESP_LOGW("board", "TCA9554 not detected");
+            return;
+        }
 
-bool tcaRead(uint8_t reg, uint8_t &value) {
-  return BoardDrivers::Tca9554::read(Wire, static_cast<uint8_t>(Board::Config::TCA9554_ADDRESS),
-                                     reg, value, Board::Config::TCA9554_RELEASE_BUS_BEFORE_READ);
-}
+        state.output &= WaveshareAmoled18::Tca9554Wiring::kDisplayClearMask;
+        state.output |= WaveshareAmoled18::Tca9554Wiring::kSdEnableMask;
+        state.config &= WaveshareAmoled18::Tca9554Wiring::kOutputClearMask;
+        state.config |= WaveshareAmoled18::Tca9554Wiring::kInputMask;
 
-bool tcaWrite(uint8_t reg, uint8_t value) {
-  return BoardDrivers::Tca9554::write(Wire, static_cast<uint8_t>(Board::Config::TCA9554_ADDRESS),
-                                      reg, value);
-}
+        if (!BoardDrivers::Tca9554::writePortState(Wire, WaveshareAmoled18::Tca9554Wiring::kAddress, state)) {
+            ESP_LOGE("board", "TCA9554 output setup failed");
+            return;
+        }
+    }
 
-void configureIoExpander(bool forceDisplaySequence = false) {
-  uint8_t output = 0xFF;
-  uint8_t config = 0xFF;
-  if (!tcaRead(BoardDrivers::Tca9554::kOutputReg, output) ||
-      !tcaRead(BoardDrivers::Tca9554::kConfigReg, config)) {
-    Serial.println("[board] TCA9554 not detected");
-    return;
-  }
+    bool beginPmu() {
+        gPmuReady = gPmu.init(Wire);
+        if (!gPmuReady) {
+            ESP_LOGW("board", "AXP2101 not responding");
+            return false;
+        }
 
-  const uint8_t displayMask =
-      static_cast<uint8_t>((1U << Board::Config::TCA9554_PIN_TOUCH_RESET) |
-                           (1U << Board::Config::TCA9554_PIN_LCD_RESET) |
-                           (1U << Board::Config::TCA9554_PIN_DISPLAY_ENABLE));
-  const uint8_t outputMask =
-      static_cast<uint8_t>(displayMask | (1U << Board::Config::TCA9554_PIN_SD_ENABLE));
-  const bool runDisplaySequence = forceDisplaySequence || !gPower.tca9554Sequenced;
+        gPmu.enableBattDetection();
+        gPmu.enableBattVoltageMeasure();
 
-  if (runDisplaySequence) {
-    output &= static_cast<uint8_t>(~displayMask);
-  } else {
-    output |= displayMask;
-  }
-  output |= static_cast<uint8_t>(1U << Board::Config::TCA9554_PIN_SD_ENABLE);
-  config &= static_cast<uint8_t>(~outputMask);
-  config |= static_cast<uint8_t>((1U << Board::Config::TCA9554_PIN_PWR_BUTTON) |
-                                 (1U << Board::Config::TCA9554_PIN_PMU_IRQ));
+        if constexpr (WaveshareAmoled18::Axp2101Wiring::kRequiresPowerKeyConfig) {
+            gPmu.setPowerKeyPressOnTime(WaveshareAmoled18::Axp2101Wiring::kPowerKeyOnTimeValue);
+            gPmu.setPowerKeyPressOffTime(WaveshareAmoled18::Axp2101Wiring::kPowerKeyOffTimeValue);
+            gPmu.setLongPressPowerOFF();
+        }
 
-  if (!tcaWrite(BoardDrivers::Tca9554::kOutputReg, output) ||
-      !tcaWrite(BoardDrivers::Tca9554::kConfigReg, config)) {
-    Serial.println("[board] TCA9554 output setup failed");
-    return;
-  }
-  if (!runDisplaySequence) {
-    return;
-  }
+        if constexpr (WaveshareAmoled18::Axp2101Wiring::kEnablePowerKeyIrqs) {
+            gPmu.enableIRQ(XPOWERS_AXP2101_PKEY_NEGATIVE_IRQ | XPOWERS_AXP2101_PKEY_POSITIVE_IRQ);
+            gPmu.clearIrqStatus();
+        }
 
-  if (forceDisplaySequence) {
-    Serial.println("[board] TCA9554 display/touch wake sequence");
-  }
-  delay(20);
-  output |= displayMask;
-  if (!tcaWrite(BoardDrivers::Tca9554::kOutputReg, output)) {
-    Serial.println("[board] TCA9554 display release failed");
-    return;
-  }
-  delay(50);
-  gPower.tca9554Sequenced = true;
-}
+        gPowerButtonHeld = false;
+        gLastPowerKeyPollMs = 0;
+        return true;
+    }
 
-}  // namespace
+    bool ensurePmuReady() {
+        return gPmuReady || beginPmu();
+    }
+
+    void pollPowerKeyIfDue(bool force = false) {
+        if constexpr (!WaveshareAmoled18::Axp2101Wiring::kEnablePowerKeyIrqs) {
+            return;
+        }
+
+        const uint32_t nowMs = millis();
+        if (!force && nowMs - gLastPowerKeyPollMs < kPowerKeyPollIntervalMs) {
+            return;
+        }
+        gLastPowerKeyPollMs = nowMs;
+
+        if (!ensurePmuReady()) {
+            return;
+        }
+
+        gPmu.getIrqStatus();
+        if (gPmu.isPekeyNegativeIrq()) {
+            gPowerButtonHeld = true;
+        }
+        if (gPmu.isPekeyPositiveIrq()) {
+            gPowerButtonHeld = false;
+        }
+        gPmu.clearIrqStatus();
+    }
+
+} // namespace
 
 namespace Board::Power {
 
-void begin() {
-  configureIoExpander();
-  BoardDrivers::Axp2101::begin();
-}
+    void begin() {
+        configureIoExpander();
+        beginPmu();
+    }
 
-void prepareDeepSleepPowerHold() {}
+    bool enableAudioPowerIfAvailable() {
+        pinMode(WaveshareAmoled18::AudioWiring::kAudioEnablePin, OUTPUT);
+        digitalWrite(WaveshareAmoled18::AudioWiring::kAudioEnablePin, HIGH);
+        return true;
+    }
 
-void resetWakePeripherals() { configureIoExpander(true); }
+    bool readBatteryStatus(BatteryStatus& status) {
+        status = {};
+        if (!ensurePmuReady() || !gPmu.isBatteryConnect()) {
+            return false;
+        }
 
-bool enableAudioPowerIfAvailable() { return true; }
+        status.present = true;
+        status.voltage = static_cast<float>(gPmu.getBattVoltage()) / 1000.0f;
+        const int percent = gPmu.getBatteryPercent();
+        status.percent = static_cast<uint8_t>(std::clamp(percent, 0, 100));
+        return status.voltage > 0.0f;
+    }
 
-bool readBatteryStatus(BatteryStatus &status) {
-  return BoardDrivers::Axp2101::readBatteryStatus(status);
-}
+    Diagnostics readDiagnostics() {
+        Diagnostics diagnostics = {};
+        if (!ensurePmuReady()) {
+            return diagnostics;
+        }
 
-DiagnosticSnapshot diagnosticSnapshot() { return BoardDrivers::Axp2101::diagnosticSnapshot(); }
+        const uint16_t status = gPmu.status();
+        diagnostics.available = true;
+        diagnostics.externalPowerPresent = gPmu.isVbusIn();
+        diagnostics.status1 = static_cast<uint8_t>(status >> 8);
+        diagnostics.status2 = static_cast<uint8_t>(status & 0xFF);
+        return diagnostics;
+    }
 
-bool externalPowerPresent() { return BoardDrivers::Axp2101::externalPowerPresent(); }
+    bool externalPowerPresent() {
+        return ensurePmuReady() && gPmu.isVbusIn();
+    }
 
-bool releaseBatteryPowerHold() { return BoardDrivers::Axp2101::releasePower(); }
+    bool powerOff() {
+        if (!ensurePmuReady()) {
+            return false;
+        }
+        ESP_LOGD("board", "AXP2101 shutdown requested");
+        gPmu.shutdown();
+        return true;
+    }
 
-bool powerOffUsesControllerWake() { return Config::REQUEST_PMU_SHUTDOWN_ON_POWEROFF; }
+    bool powerButtonHeld() {
+        pollPowerKeyIfDue();
+        return gPowerButtonHeld;
+    }
 
-bool shouldRequestShutdownOnPowerOff() { return Config::REQUEST_PMU_SHUTDOWN_ON_POWEROFF; }
-
-bool shouldReleaseBatteryPowerBeforeDeepSleep() {
-  return Config::RELEASE_BATTERY_HOLD_BEFORE_DEEP_SLEEP;
-}
-
-}  // namespace Board::Power
+} // namespace Board::Power

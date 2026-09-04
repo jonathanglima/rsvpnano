@@ -1,85 +1,172 @@
 #include "board/BoardDisplay.h"
+#include <esp_log.h>
 
+#include "board/BacklightBrightness.h"
+
+#include <Arduino.h>
 #include <Wire.h>
-#include <driver/gpio.h>
+#include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 
-#include "drivers/gpio/Tca9554.h"
-#include "drivers/display/axs15231b/axs15231b.h"
+#include "platforms/waveshare_lcd_349/RowPrefixCanvas.h"
+#include "drivers/gpio/tca9554/Tca9554.h"
+#include "platforms/waveshare_lcd_349/WaveshareLcd349.h"
 
 namespace {
 
-struct DisplayContext {
-  bool backlightEnableConfigured = false;
-  Axs15231b::Context panel;
-};
+    constexpr int32_t kPanelBusHz = 40000000;
 
-DisplayContext gDisplay;
+    Arduino_ESP32QSPI gBus(WaveshareLcd349::DisplayWiring::kCsPin, WaveshareLcd349::DisplayWiring::kSclkPin,
+                           WaveshareLcd349::DisplayWiring::kData0Pin, WaveshareLcd349::DisplayWiring::kData1Pin,
+                           WaveshareLcd349::DisplayWiring::kData2Pin, WaveshareLcd349::DisplayWiring::kData3Pin, false);
 
-bool configureOutputPin(uint8_t pin, bool high) {
-  return BoardDrivers::Tca9554::configureOutputPin(
-      Wire1, static_cast<uint8_t>(Board::Config::TCA9554_ADDRESS), pin, high,
-      Board::Config::TCA9554_RELEASE_BUS_BEFORE_READ);
-}
+    Arduino_AXS15231B gPanel(&gBus, WaveshareLcd349::DisplayWiring::kResetPin, 0, false,
+                             WaveshareLcd349::DisplayWiring::kPanelWidth, WaveshareLcd349::DisplayWiring::kPanelHeight,
+                             0, 0, 0, 0);
 
-}  // namespace
+    RowPrefixCanvas gCanvas(WaveshareLcd349::DisplayWiring::kPanelWidth, WaveshareLcd349::DisplayWiring::kPanelHeight,
+                            gPanel, 0, 0, 1);
+
+    // This panel's PWM curve has a large dead zone at low duty values.
+    // Keep the user-facing brightness scale at 1-100%, but map it onto
+    // the usable hardware duty range so 5% is dim rather than off.
+    constexpr uint8_t kMinimumBacklightDuty = 102;
+
+    uint8_t gBacklightDuty = Board::Backlight::dutyFromPercent(100, kMinimumBacklightDuty);
+    bool gBacklight = true;
+
+    void writeBacklight() {
+        if constexpr (WaveshareLcd349::DisplayWiring::kBacklightPin < 0) {
+            return;
+        }
+
+        if (!gBacklight) {
+            pinMode(WaveshareLcd349::DisplayWiring::kBacklightPin, OUTPUT);
+            digitalWrite(WaveshareLcd349::DisplayWiring::kBacklightPin, HIGH);
+            return;
+        }
+
+        analogWriteResolution(WaveshareLcd349::DisplayWiring::kBacklightPin, 8);
+        analogWriteFrequency(WaveshareLcd349::DisplayWiring::kBacklightPin, 25000);
+
+        // Rev1 backlight is inverted: 0 = full on, 255 = off.
+        analogWrite(WaveshareLcd349::DisplayWiring::kBacklightPin, 255 - gBacklightDuty);
+    }
+
+    void setBacklightPower(bool enabled) {
+        BoardDrivers::Tca9554::configureOutputPin(Wire1, WaveshareLcd349::Tca9554Wiring::kAddress,
+                                                  WaveshareLcd349::Tca9554Wiring::kBacklightEnablePin, enabled,
+                                                  WaveshareLcd349::Tca9554Wiring::kReleaseBusBeforeRead);
+    }
+
+    void logDisplayMemory() {
+        ESP_LOGD("display", "host=%d mode=%d", static_cast<int>(ESP32QSPI_SPI_HOST),
+                 static_cast<int>(ESP32QSPI_SPI_MODE));
+
+        ESP_LOGD("display", "psramFound=%s size=%u free=%u", psramFound() ? "yes" : "no", ESP.getPsramSize(),
+                 ESP.getFreePsram());
+
+        ESP_LOGD("display", "heap internal=%u spiram=%u", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    }
+
+    void logCanvasMemory() {
+        uint16_t* framebuffer = gCanvas.getFramebuffer();
+
+        ESP_LOGD("display", "canvas framebuffer=%p external=%s", framebuffer,
+                 esp_ptr_external_ram(framebuffer) ? "yes" : "no");
+
+        ESP_LOGD("display", "after canvas: heap internal=%u spiram=%u", heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    }
+
+} // namespace
 
 namespace Board::Display {
 
-bool begin() {
-  Axs15231b::init(gDisplay.panel);
-  return true;
-}
+    bool begin() {
+        setBacklightPower(true);
 
-void enablePowerIfAvailable() {
-  if (gDisplay.backlightEnableConfigured) {
-    return;
-  }
+        pinMode(WaveshareLcd349::DisplayWiring::kBacklightPin, OUTPUT);
 
-  if (!configureOutputPin(Config::TCA9554_PIN_BACKLIGHT_ENABLE, true)) {
-    Serial.println("[board] TCA9554 backlight enable not configured");
-    return;
-  }
+        if constexpr (WaveshareLcd349::DisplayWiring::kResetPin < 0) {
+            BoardDrivers::Tca9554::configureOutputPin(Wire1, WaveshareLcd349::Tca9554Wiring::kAddress, 5, true);
+        }
 
-  gDisplay.backlightEnableConfigured = true;
-  Serial.println("[board] Backlight enable configured");
-}
+        logDisplayMemory();
+        const bool ok = gCanvas.begin(kPanelBusHz);
 
-void holdBacklightOffForDeepSleep() {
-  if (!Config::HAS_LCD_BACKLIGHT || Config::PIN_LCD_BACKLIGHT < 0) {
-    return;
-  }
+        if (ok)
+            ESP_LOGI("display", "canvas ready");
+        else
+            ESP_LOGE("display", "canvas initialization failed");
+        ESP_LOGD("display", "canvas size=%dx%d", gCanvas.width(), gCanvas.height());
 
-  const gpio_num_t backlightPin = static_cast<gpio_num_t>(Config::PIN_LCD_BACKLIGHT);
-  analogWrite(Config::PIN_LCD_BACKLIGHT, 255);
-  pinMode(Config::PIN_LCD_BACKLIGHT, OUTPUT);
-  digitalWrite(Config::PIN_LCD_BACKLIGHT, HIGH);
-  gpio_set_direction(backlightPin, GPIO_MODE_OUTPUT);
-  gpio_set_level(backlightPin, 1);
-  gpio_hold_en(backlightPin);
-  gpio_deep_sleep_hold_en();
-}
+        if (!ok) {
+            setBacklight(false);
+            return false;
+        }
 
-void setBacklight(bool on) { Axs15231b::setBacklight(gDisplay.panel, on); }
+        logCanvasMemory();
 
-void flashBacklight(uint8_t count, uint32_t onMs, uint32_t offMs) {
-  for (uint8_t i = 0; i < count; ++i) {
-    setBacklight(true);
-    delay(onMs);
-    setBacklight(false);
-    delay(offMs);
-  }
-}
+        gCanvas.fillScreen(0x0000);
+        gCanvas.flush();
+        writeBacklight();
 
-void setBrightness(uint8_t percent) { Axs15231b::setBrightnessPercent(gDisplay.panel, percent); }
+        return true;
+    }
 
-void sleep() { Axs15231b::sleep(gDisplay.panel); }
+    Arduino_GFX& gfx() {
+        return gCanvas;
+    }
 
-void wake() { Axs15231b::wake(gDisplay.panel); }
+    ui::Orientation defaultUiOrientation() {
+        return WaveshareLcd349::DisplayWiring::kDefaultUiOrientation;
+    }
 
-bool pushColors(uint16_t x, uint16_t y, uint16_t width, uint16_t height,
-                const uint16_t *data) {
-  Axs15231b::pushColors(gDisplay.panel, x, y, width, height, data);
-  return true;
-}
+    ui::Orientation rotatedUiOrientation() {
+        return ui::opposite(WaveshareLcd349::DisplayWiring::kDefaultUiOrientation);
+    }
 
-}  // namespace Board::Display
+    uint16_t nativeWidth() {
+        return WaveshareLcd349::DisplayWiring::kPanelWidth;
+    }
+
+    uint16_t nativeHeight() {
+        return WaveshareLcd349::DisplayWiring::kPanelHeight;
+    }
+
+    size_t txChunkBytes() {
+        return WaveshareLcd349::DisplayWiring::kTxChunkBytes;
+    }
+
+    void setBacklight(bool on) {
+        gBacklight = on;
+        writeBacklight();
+    }
+
+    void setBrightness(uint8_t percent) {
+        gBacklightDuty = Board::Backlight::dutyFromPercent(percent, kMinimumBacklightDuty);
+        writeBacklight();
+    }
+
+    void sleep() {
+        setBacklight(false);
+        setBacklightPower(false);
+    }
+
+    void wake() {
+        // Redraw whatever is currently in the canvas framebuffer.
+        gCanvas.flush(true);
+        setBacklightPower(true);
+        setBacklight(true);
+    }
+
+    bool pushColors(uint16_t x, uint16_t y, uint16_t width, uint16_t height, const uint16_t* data) {
+        gCanvas.draw16bitRGBBitmap(x, y, const_cast<uint16_t*>(data), width, height);
+
+        // Important: do NOT flush here. Flush once at the end of the frame.
+        return true;
+    }
+
+} // namespace Board::Display

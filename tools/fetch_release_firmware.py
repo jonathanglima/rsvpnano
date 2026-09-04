@@ -9,106 +9,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from export_web_firmware import FLASH_EXPORTS, OTA_EXPORTS, write_release_metadata
+
 
 ROOT = Path(__file__).resolve().parents[1]
-WEB_FIRMWARE_DIR = ROOT / "web" / "firmware"
-MANIFEST_PATH = WEB_FIRMWARE_DIR / "manifest.json"
-REV2_MANIFEST_PATH = WEB_FIRMWARE_DIR / "manifest-rev2.json"
+FIRMWARE_DIR = ROOT / "build" / "firmware"
 DEFAULT_REPO = "ionutdecebal/rsvpnano"
-DEFAULT_REQUIRED_ASSETS = (
-    "rsvp-nano.bin",
-    "rsvp-nano-ota.bin",
-    "rsvp-nano-esp32-s3-touch-lcd-3.49-ota.bin",
-)
-DEFAULT_OPTIONAL_ASSETS = (
-    "rsvp-nano-rev2.bin",
-    "rsvp-nano-rev2-ota.bin",
-    "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-v2-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.16.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.16-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.41.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.41-ota.bin",
-)
-
-
-def default_manifest(name: str, binary: str, features: list[str]) -> dict:
-    return {
-        "name": name,
-        "version": "dev",
-        "new_install_prompt_erase": True,
-        "new_install_improv_wait_time": 0,
-        "features": features,
-        "builds": [
-            {
-                "chipFamily": "ESP32-S3",
-                "improv": False,
-                "parts": [
-                    {
-                        "path": binary,
-                        "offset": 0,
-                    }
-                ],
-            }
-        ],
-    }
-
-
-COMMON_FEATURES = [
-    "Books and articles library",
-    "Device-hosted web companion",
-    "RSS feed downloads",
-    "USB SD-card transfer mode",
-]
-
-FLASH_MANIFESTS = {
-    "rsvp-nano.bin": {
-        "path": MANIFEST_PATH,
-        "fallback": default_manifest("RSVP Nano", "rsvp-nano.bin", COMMON_FEATURES),
-    },
-    "rsvp-nano-rev2.bin": {
-        "path": REV2_MANIFEST_PATH,
-        "fallback": default_manifest(
-            "RSVP Nano Rev2",
-            "rsvp-nano-rev2.bin",
-            COMMON_FEATURES + ["GPIO42 backlight profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-1.8.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-1.8.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 1.8",
-            "rsvp-nano-esp32-s3-touch-amoled-1.8.bin",
-            COMMON_FEATURES + ["Touch AMOLED 1.8 profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-1.8-v2.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 1.8 V2 Test",
-            "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin",
-            COMMON_FEATURES + ["Touch AMOLED 1.8 V2 test profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-2.16.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-2.16.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 2.16",
-            "rsvp-nano-esp32-s3-touch-amoled-2.16.bin",
-            COMMON_FEATURES + ["Touch AMOLED 2.16 profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-2.41.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-2.41.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 2.41",
-            "rsvp-nano-esp32-s3-touch-amoled-2.41.bin",
-            COMMON_FEATURES + ["Touch AMOLED 2.41 profile"],
-        ),
-    },
+ASSET_FALLBACKS = {
+    "rsvp-nano-esp32-s3-touch-lcd-3.49.bin": ("rsvp-nano.bin",),
+    "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2.bin": ("rsvp-nano-rev2.bin",),
 }
 
 
@@ -160,26 +69,24 @@ def find_asset(release: dict, name: str, required: bool = True) -> dict | None:
     return None
 
 
-def load_manifest(path: Path, fallback: dict) -> dict:
-    if not path.exists():
-        return json.loads(json.dumps(fallback))
-    return json.loads(path.read_text())
+def find_asset_with_fallback(release: dict, name: str, required: bool = True) -> tuple[dict | None, str | None]:
+    asset = find_asset(release, name, required=False)
+    if asset is not None:
+        return asset, name
 
+    for fallback in ASSET_FALLBACKS.get(name, ()):
+        asset = find_asset(release, fallback, required=False)
+        if asset is not None:
+            return asset, fallback
 
-def write_manifests(version: str, available_flash_assets: set[str], prune_missing: bool) -> None:
-    for asset_name, manifest_info in FLASH_MANIFESTS.items():
-        path = manifest_info["path"]
-        if asset_name in available_flash_assets:
-            manifest = load_manifest(path, manifest_info["fallback"])
-            manifest["version"] = version
-            path.write_text(json.dumps(manifest, indent=2) + "\n")
-        elif prune_missing and path.exists():
-            path.unlink()
+    if required:
+        raise SystemExit(f"Latest release is missing required asset: {name}")
+    return None, None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Populate web/firmware from the latest published GitHub Release."
+        description="Populate build/firmware from the latest published GitHub Release."
     )
     parser.add_argument(
         "--repo",
@@ -199,51 +106,46 @@ def main() -> int:
     if not tag_name:
         raise SystemExit("Latest release is missing tag_name.")
 
-    WEB_FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
 
-    if args.assets:
-        requested_assets = tuple(args.assets)
-        downloaded_assets: set[str] = set()
-        for asset_name in requested_assets:
-            asset = find_asset(release, asset_name)
-            url = str(asset.get("browser_download_url", "")).strip()
-            if not url:
+    requested_assets = tuple(args.assets) if args.assets else None
+    available_firmware: dict[str, str] = {}
+    all_exports = (*FLASH_EXPORTS, *OTA_EXPORTS)
+    exports = all_exports if requested_assets is not None else FLASH_EXPORTS
+    for export in exports:
+        asset_name = export["binary"]
+        if requested_assets is not None and asset_name not in requested_assets:
+            continue
+        asset, release_asset_name = find_asset_with_fallback(
+            release,
+            asset_name,
+            required=requested_assets is not None,
+        )
+        if asset is None:
+            print(f"Skipping release asset not present in {tag_name}: {asset_name}")
+            continue
+        url = str(asset.get("browser_download_url", "")).strip()
+        if not url:
+            if requested_assets is not None:
                 raise SystemExit(f"Release asset is missing browser_download_url: {asset_name}")
-            destination = WEB_FIRMWARE_DIR / asset_name
-            print(f"Downloading {asset_name} from {tag_name} -> {destination}")
-            download_file(url, destination)
-            downloaded_assets.add(asset_name)
-    else:
-        downloaded_assets = set()
-        for asset_name in DEFAULT_REQUIRED_ASSETS:
-            asset = find_asset(release, asset_name)
-            url = str(asset.get("browser_download_url", "")).strip()
-            if not url:
-                raise SystemExit(f"Release asset is missing browser_download_url: {asset_name}")
-            destination = WEB_FIRMWARE_DIR / asset_name
-            print(f"Downloading {asset_name} from {tag_name} -> {destination}")
-            download_file(url, destination)
-            downloaded_assets.add(asset_name)
+            print(f"Skipping release asset with no download URL: {asset_name}")
+            continue
+        destination = FIRMWARE_DIR / asset_name
+        print(f"Downloading {release_asset_name} from {tag_name} -> {destination}")
+        download_file(url, destination)
+        if "id" in export:
+            available_firmware[export["id"]] = asset_name
 
-        for asset_name in DEFAULT_OPTIONAL_ASSETS:
-            asset = find_asset(release, asset_name, required=False)
-            if asset is None:
-                print(f"Skipping optional release asset not present in {tag_name}: {asset_name}")
-                continue
-            url = str(asset.get("browser_download_url", "")).strip()
-            if not url:
-                print(f"Skipping optional release asset with no download URL: {asset_name}")
-                continue
-            destination = WEB_FIRMWARE_DIR / asset_name
-            print(f"Downloading {asset_name} from {tag_name} -> {destination}")
-            download_file(url, destination)
-            downloaded_assets.add(asset_name)
+    if requested_assets is not None:
+        unknown_assets = set(requested_assets) - {export["binary"] for export in all_exports}
+        if unknown_assets:
+            formatted = ", ".join(sorted(unknown_assets))
+            raise SystemExit(f"Unknown firmware asset requested: {formatted}")
+    if requested_assets is None and not available_firmware:
+        raise SystemExit(f"Release {tag_name} has no browser-flasher images.")
 
-    write_manifests(
-        tag_name,
-        {asset_name for asset_name in downloaded_assets if asset_name in FLASH_MANIFESTS},
-        prune_missing=not args.assets,
-    )
+    if available_firmware:
+        write_release_metadata(tag_name, available_firmware)
     print(f"Web firmware updated to release {tag_name}")
     return 0
 

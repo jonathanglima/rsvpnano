@@ -3,29 +3,35 @@
 #include <Wire.h>
 
 #include "board/BoardAudio.h"
-#include "board/BoardConfig.h"
 #include "drivers/audio/es8311/Es8311.h"
+#include "platforms/waveshare_lcd_349/WaveshareLcd349.h"
 
 namespace {
 
-BoardDrivers::Es8311::Context gAudioContext = {
-    &Wire1,
-    Board::Config::ES8311_ADDRESS,
-    I2S_NUM_0,
-    Board::Config::PIN_AUDIO_MCLK,
-    Board::Config::PIN_AUDIO_BCLK,
-    Board::Config::PIN_AUDIO_WS,
-    Board::Config::PIN_AUDIO_DOUT,
-};
+    BoardDrivers::Es8311::Context gAudioContext = {
+        Wire1,
+        WaveshareLcd349::AudioWiring::kEs8311Address,
+        I2S_NUM_0,
+        WaveshareLcd349::AudioWiring::kMclkPin,
+        WaveshareLcd349::AudioWiring::kBclkPin,
+        WaveshareLcd349::AudioWiring::kWsPin,
+        WaveshareLcd349::AudioWiring::kDoutPin,
+    };
 
-}  // namespace
+} // namespace
 
 namespace Board::Audio {
 
-bool begin() { return BoardPlatform::Es8311BoardAudio::begin(gAudioContext); }
+    bool begin() {
+        return BoardPlatform::Es8311BoardAudio::begin(gAudioContext);
+    }
 
-bool beep() { return BoardPlatform::Es8311BoardAudio::beep(gAudioContext); }
+    bool beep() {
+        return BoardPlatform::Es8311BoardAudio::beep(gAudioContext);
+    }
 
-bool available() { return BoardPlatform::Es8311BoardAudio::available(gAudioContext); }
+    bool available() {
+        return BoardPlatform::Es8311BoardAudio::available(gAudioContext);
+    }
 
-}  // namespace Board::Audio
+} // namespace Board::Audio

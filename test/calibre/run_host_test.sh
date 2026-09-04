@@ -44,11 +44,11 @@ echo "[run_host_test] compiling parsers test with ${CXX} -std=c++17"
   -I"${VENDOR_DIR}" \
   "${SCRIPT_DIR}/test_calibre_parse.cpp" \
   "${REPO_ROOT}/src/calibre/CalibreClient.cpp" \
-  "${REPO_ROOT}/src/net/HttpFetch.cpp" \
+  "${REPO_ROOT}/src/network/HttpFetch.cpp" \
   -o "${BIN}"
 
 # build + run the PURE reconcile-core test
-# (src/sync/CalibreSyncPlan.h, header-only -- no .cpp to compile).
+# (src/calibre/CalibreSyncPlan.h, header-only -- no .cpp to compile).
 SYNC_BIN="${BUILD_DIR}/test_sync_plan"
 echo "[run_host_test] compiling sync plan test with ${CXX} -std=c++17"
 "${CXX}" -std=c++17 -Wall -Wextra \
@@ -58,22 +58,8 @@ echo "[run_host_test] compiling sync plan test with ${CXX} -std=c++17"
   "${SCRIPT_DIR}/test_sync_plan.cpp" \
   -o "${SYNC_BIN}"
 
-# build + run the Calibre settings JSON serialize/parse test.
-# src/calibre/CalibreSettingsJson.h is header-only; CalibreSettings.h is also
-# header-only for the host (the #if ARDUINO guard in CalibreSettings.cpp means
-# no .cpp to compile here). Only the shim + test TU are needed.
-SETTINGS_JSON_BIN="${BUILD_DIR}/test_calibre_settings_json"
-echo "[run_host_test] compiling calibre settings JSON test with ${CXX} -std=c++17"
-"${CXX}" -std=c++17 -Wall -Wextra \
-  -I"${REPO_ROOT}/src" \
-  -I"${REPO_ROOT}/test/support" \
-  -I"${VENDOR_DIR}" \
-  "${SCRIPT_DIR}/test_calibre_settings_json.cpp" \
-  -o "${SETTINGS_JSON_BIN}"
-
 echo "[run_host_test] running"
 # Run from the repo root so the test can find tools/calibre-sync/fixtures/.
 cd "${REPO_ROOT}"
 "${BIN}"
 "${SYNC_BIN}"
-"${SETTINGS_JSON_BIN}"

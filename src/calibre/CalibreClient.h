@@ -4,7 +4,7 @@
 
 #include <vector>
 
-#include "net/HttpFetch.h"
+#include "network/HttpFetch.h"
 
 // The on-device ajax client for a calibre-server. Mirrors the split used by
 // src/update/OtaUpdater.* and src/update/ReleaseParser.*: a networking class

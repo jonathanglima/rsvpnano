@@ -6,83 +6,92 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WEB_FIRMWARE_DIR = ROOT / "web" / "firmware"
+FIRMWARE_DIR = ROOT / "build" / "firmware"
+RELEASE_METADATA_PATH = FIRMWARE_DIR / "release.json"
+VERSION_DIR = FIRMWARE_DIR / "versions"
 BOOT_APP0_GLOB = "framework-arduinoespressif32*/tools/partitions/boot_app0.bin"
+VERSION_DECLARATION = "inline constexpr char kFirmwareVersion[] = "
 
 FLASH_EXPORTS = (
     {
-        "env": "waveshare_esp32s3",
-        "binary": "rsvp-nano.bin",
-        "manifest": "manifest.json",
+        "id": "lcd349-v1",
+        "env": "waveshare_esp32s3_touch_lcd_349_rev1",
+        "binary": "rsvp-nano-esp32-s3-touch-lcd-3.49.bin",
         "label": "RSVP Nano Touch LCD 3.49 rev1 firmware",
     },
     {
-        "env": "waveshare_esp32s3_rev2",
-        "binary": "rsvp-nano-rev2.bin",
-        "manifest": "manifest-rev2.json",
-        "label": "RSVP Nano Touch LCD 3.49 rev2/GPIO42 firmware",
+        "id": "lcd349-v2",
+        "env": "waveshare_esp32s3_touch_lcd_349_rev2",
+        "binary": "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2.bin",
+        "label": "RSVP Nano Touch LCD 3.49 rev2 firmware",
     },
     {
-        "env": "waveshare_esp32s3_touch_amoled_18",
+        "id": "amoled18-v1",
+        "env": "waveshare_esp32s3_touch_amoled_18_v1",
         "binary": "rsvp-nano-esp32-s3-touch-amoled-1.8.bin",
-        "manifest": "manifest-esp32-s3-touch-amoled-1.8.json",
-        "label": "RSVP Nano Touch AMOLED 1.8 V1 firmware",
+        "label": "RSVP Nano Touch AMOLED 1.8 v1 firmware",
     },
     {
+        "id": "amoled18-v2",
         "env": "waveshare_esp32s3_touch_amoled_18_v2",
         "binary": "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin",
-        "manifest": "manifest-esp32-s3-touch-amoled-1.8-v2.json",
-        "label": "RSVP Nano Touch AMOLED 1.8 V2 Test firmware",
+        "label": "RSVP Nano Touch AMOLED 1.8 v2 firmware",
     },
     {
+        "id": "amoled206",
+        "env": "waveshare_esp32s3_touch_amoled_206",
+        "binary": "rsvp-nano-esp32-s3-touch-amoled-2.06.bin",
+        "label": "RSVP Nano Touch AMOLED 2.06 firmware",
+    },
+    {
+        "id": "amoled216",
         "env": "waveshare_esp32s3_touch_amoled_216",
         "binary": "rsvp-nano-esp32-s3-touch-amoled-2.16.bin",
-        "manifest": "manifest-esp32-s3-touch-amoled-2.16.json",
         "label": "RSVP Nano Touch AMOLED 2.16 firmware",
     },
     {
+        "id": "amoled241",
         "env": "waveshare_esp32s3_touch_amoled_241",
         "binary": "rsvp-nano-esp32-s3-touch-amoled-2.41.bin",
-        "manifest": "manifest-esp32-s3-touch-amoled-2.41.json",
         "label": "RSVP Nano Touch AMOLED 2.41 firmware",
+    },
+    {
+        "id": "lcd147-c6",
+        "env": "waveshare_esp32c6_touch_lcd_147",
+        "binary": "rsvp-nano-esp32-c6-touch-lcd-1.47.bin",
+        "label": "RSVP Nano ESP32-C6 Touch LCD 1.47 firmware",
     },
 )
 
 OTA_EXPORTS = (
     {
-        "env": "waveshare_esp32s3",
-        "binary": "rsvp-nano-ota.bin",
-        "label": "RSVP Nano Touch LCD 3.49 OTA firmware (legacy asset)",
-    },
-    {
-        "env": "waveshare_esp32s3",
+        "env": "waveshare_esp32s3_touch_lcd_349_rev1",
         "binary": "rsvp-nano-esp32-s3-touch-lcd-3.49-ota.bin",
         "label": "RSVP Nano Touch LCD 3.49 OTA firmware",
     },
     {
-        "env": "waveshare_esp32s3_rev2",
-        "binary": "rsvp-nano-rev2-ota.bin",
-        "label": "RSVP Nano Touch LCD 3.49 rev2 OTA firmware (legacy asset)",
-    },
-    {
-        "env": "waveshare_esp32s3_rev2",
+        "env": "waveshare_esp32s3_touch_lcd_349_rev2",
         "binary": "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2-ota.bin",
-        "label": "RSVP Nano Touch LCD 3.49 rev2/GPIO42 OTA firmware",
+        "label": "RSVP Nano Touch LCD 3.49 rev2 OTA firmware",
     },
     {
-        "env": "waveshare_esp32s3_touch_amoled_18",
+        "env": "waveshare_esp32s3_touch_amoled_18_v1",
         "binary": "rsvp-nano-esp32-s3-touch-amoled-1.8-ota.bin",
-        "label": "RSVP Nano Touch AMOLED 1.8 V1 OTA firmware",
+        "label": "RSVP Nano Touch AMOLED 1.8 v1 OTA firmware",
     },
     {
         "env": "waveshare_esp32s3_touch_amoled_18_v2",
         "binary": "rsvp-nano-esp32-s3-touch-amoled-1.8-v2-ota.bin",
-        "label": "RSVP Nano Touch AMOLED 1.8 V2 Test OTA firmware",
+        "label": "RSVP Nano Touch AMOLED 1.8 v2 OTA firmware",
+    },
+    {
+        "env": "waveshare_esp32s3_touch_amoled_206",
+        "binary": "rsvp-nano-esp32-s3-touch-amoled-2.06-ota.bin",
+        "label": "RSVP Nano Touch AMOLED 2.06 OTA firmware",
     },
     {
         "env": "waveshare_esp32s3_touch_amoled_216",
@@ -94,15 +103,22 @@ OTA_EXPORTS = (
         "binary": "rsvp-nano-esp32-s3-touch-amoled-2.41-ota.bin",
         "label": "RSVP Nano Touch AMOLED 2.41 OTA firmware",
     },
+    {
+        "env": "waveshare_esp32c6_touch_lcd_147",
+        "binary": "rsvp-nano-esp32-c6-touch-lcd-1.47-ota.bin",
+        "label": "RSVP Nano ESP32-C6 Touch LCD 1.47 OTA firmware",
+    },
+)
+
+REQUIRED_ENVS = tuple(
+    sorted({export["env"] for export in FLASH_EXPORTS} | {export["env"] for export in OTA_EXPORTS})
 )
 
 
-def run(command: list[str], version: str | None = None) -> None:
+def run(command: list[str]) -> None:
     print("+", " ".join(command))
     env = os.environ.copy()
     env.setdefault("PLATFORMIO_SETTING_ENABLE_TELEMETRY", "No")
-    if version:
-        env["RSVP_FIRMWARE_VERSION"] = version
     subprocess.run(command, cwd=ROOT, check=True, env=env)
 
 
@@ -116,16 +132,6 @@ def pio_command() -> str:
         return found
 
     raise SystemExit("PlatformIO Core was not found. Install it or activate the PlatformIO env.")
-
-
-def git_version() -> str:
-    try:
-        value = subprocess.check_output(
-            ["git", "describe", "--tags", "--always", "--dirty"], cwd=ROOT, text=True
-        ).strip()
-        return value or "dev"
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return "dev"
 
 
 def find_boot_app0() -> Path:
@@ -187,10 +193,64 @@ def export_ota_binary(env: str, output: Path) -> None:
     shutil.copy2(firmware_path, output)
 
 
-def update_manifest(path: Path, version: str) -> None:
-    manifest = json.loads(path.read_text())
-    manifest["version"] = version
-    path.write_text(json.dumps(manifest, indent=2) + "\n")
+def read_generated_version(env: str) -> str:
+    header = ROOT / ".pio" / "build" / env / "generated" / "FirmwareVersion.generated.h"
+    if not header.exists():
+        raise SystemExit(f"Missing generated firmware version header for {env}: {header}")
+
+    for line in header.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(VERSION_DECLARATION) or not stripped.endswith(";"):
+            continue
+
+        encoded_version = stripped[len(VERSION_DECLARATION) : -1].strip()
+        version = json.loads(encoded_version)
+        if isinstance(version, str) and version:
+            return version
+
+    raise SystemExit(f"Could not read firmware version from generated header: {header}")
+
+
+def generated_version(envs: list[str]) -> str:
+    versions = {read_generated_version(env) for env in envs}
+    if len(versions) != 1:
+        formatted = ", ".join(sorted(versions))
+        raise SystemExit(f"PlatformIO environments produced different firmware versions: {formatted}")
+
+    return versions.pop()
+
+
+def write_release_metadata(version: str, firmware: dict[str, str]) -> None:
+    metadata = {"version": version, "firmware": firmware}
+    RELEASE_METADATA_PATH.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+
+
+def write_version_marker(env: str, version: str) -> None:
+    VERSION_DIR.mkdir(parents=True, exist_ok=True)
+    (VERSION_DIR / f"{env}.txt").write_text(version + "\n", encoding="utf-8")
+
+
+def assemble_release() -> None:
+    missing_markers = [env for env in REQUIRED_ENVS if not (VERSION_DIR / f"{env}.txt").exists()]
+    if missing_markers:
+        raise SystemExit(f"Missing firmware version markers: {', '.join(missing_markers)}")
+
+    versions = {
+        (VERSION_DIR / f"{env}.txt").read_text(encoding="utf-8").strip()
+        for env in REQUIRED_ENVS
+    }
+    if len(versions) != 1 or not next(iter(versions)):
+        raise SystemExit(f"Firmware jobs produced different versions: {', '.join(sorted(versions))}")
+
+    for export in (*FLASH_EXPORTS, *OTA_EXPORTS):
+        path = FIRMWARE_DIR / export["binary"]
+        if not path.exists():
+            raise SystemExit(f"Missing exported firmware: {path}")
+
+    version = versions.pop()
+    write_release_metadata(version, {export["id"]: export["binary"] for export in FLASH_EXPORTS})
+    shutil.rmtree(VERSION_DIR)
+    print(f"Firmware release assembled in {FIRMWARE_DIR}")
 
 
 def main() -> int:
@@ -200,39 +260,52 @@ def main() -> int:
         action="store_true",
         help="Use existing .pio build outputs instead of running PlatformIO first.",
     )
-    parser.add_argument("--version", default=git_version(), help="Version string for manifests.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--env", choices=REQUIRED_ENVS, help="Build and export one PlatformIO environment.")
+    mode.add_argument("--list-envs", action="store_true", help="Print the build environment matrix as JSON.")
+    mode.add_argument("--assemble", action="store_true", help="Assemble artifacts exported by --env jobs.")
     args = parser.parse_args()
 
-    pio = None if args.skip_build else pio_command()
-    WEB_FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    if args.list_envs:
+        print(json.dumps(REQUIRED_ENVS))
+        return 0
+    if args.assemble:
+        assemble_release()
+        return 0
+
+    required_envs = [args.env] if args.env else list(REQUIRED_ENVS)
 
     if not args.skip_build:
-        required_envs = sorted(
-            {
-                export["env"]
-                for export in FLASH_EXPORTS
-            }
-            | {
-                export["env"]
-                for export in OTA_EXPORTS
-            }
-        )
+        pio = pio_command()
         for env in required_envs:
-            assert pio is not None
-            run([pio, "run", "-e", env], args.version)
+            run([pio, "run", "-e", env])
+
+    version = generated_version(required_envs)
+    print(f"Firmware version: {version}")
+
+    FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
 
     for export in FLASH_EXPORTS:
-        output = WEB_FIRMWARE_DIR / export["binary"]
+        if export["env"] not in required_envs:
+            continue
+        output = FIRMWARE_DIR / export["binary"]
         print(f"Exporting {export['label']} -> {output}")
         merge_firmware(export["env"], output)
-        update_manifest(WEB_FIRMWARE_DIR / export["manifest"], args.version)
 
     for export in OTA_EXPORTS:
-        ota_output = WEB_FIRMWARE_DIR / export["binary"]
+        if export["env"] not in required_envs:
+            continue
+        ota_output = FIRMWARE_DIR / export["binary"]
         print(f"Exporting {export['label']} -> {ota_output}")
         export_ota_binary(export["env"], ota_output)
 
-    print(f"Web firmware exported to {WEB_FIRMWARE_DIR}")
+    if args.env:
+        write_version_marker(args.env, version)
+    else:
+        write_release_metadata(version, {export["id"]: export["binary"] for export in FLASH_EXPORTS})
+        shutil.rmtree(VERSION_DIR, ignore_errors=True)
+
+    print(f"Web firmware exported to {FIRMWARE_DIR}")
     return 0
 
 

@@ -1,4 +1,4 @@
-// Host unit test for the PURE reconcile core in src/sync/CalibreSyncPlan.h
+// Host unit test for the PURE reconcile core in src/calibre/CalibreSyncPlan.h
 // (calibresync::computeSyncPlan). Mirrors test/calibre/test_calibre_parse.cpp
 // in spirit and harness: built standalone by run_host_test.sh with plain
 // g++ -std=c++17 against the test/support Arduino String shim. No networking,
@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "sync/CalibreSyncPlan.h"
+#include "calibre/CalibreSyncPlan.h"
 
 using calibresync::computeSyncPlan;
 using calibresync::DeletionPolicy;
