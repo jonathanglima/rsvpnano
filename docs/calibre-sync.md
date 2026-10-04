@@ -191,13 +191,14 @@ the `password` field.
 2. **Resolve library** — `GET /ajax/library-info` to confirm or discover `library_id`.
 3. **Search** — `GET /ajax/search?query=<searchQuery>&library_id=<lib>` → `book_ids[]`.
 4. **Resolve each book** — `GET /ajax/book/<id>?library_id=<lib>` → `RsvpRef` (url, size, mtime).
-5. **Compute sync plan** — `calibresync::computeSyncPlan(remote, manifest, policy, openPath)` (pure, no I/O). `openPath` is the book open in the reader, captured on the main task before the job starts.
-6. **Download** new and changed files to `<routed folder>/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename). The folder comes from `CalibreSyncManager::targetDirectoryFor()` — `/library/articles` for a book tagged `article`, `/library/books` otherwise.
-7. **Move** books whose bytes are unchanged but whose folder changed (a retag), renaming the `.rsvp` and its sidecars. No network.
-8. **Delete** removed books from SD, sidecars included (Mirror policy only).
-9. **Rewrite manifest** `/library/.calibre-sync.json`.
-10. **Reindex** — `StorageManager::refreshBooks()` so the library reflects the new/removed files.
-11. **Tear down WiFi**.
+5. **Resolve filename collisions** — `calibresync::resolvePathCollisions()` gives every book a file of its own (see below).
+6. **Compute sync plan** — `calibresync::computeSyncPlan(remote, manifest, policy, openPath)` (pure, no I/O). `openPath` is the book open in the reader, captured on the main task before the job starts.
+7. **Download** new and changed files to `<routed folder>/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename). The folder comes from `CalibreSyncManager::targetDirectoryFor()` — `/library/articles` for a book tagged `article`, `/library/books` otherwise.
+8. **Move** books whose bytes are unchanged but whose path changed (a retag, or a title change in Calibre), renaming the `.rsvp` and its sidecars. No network.
+9. **Delete** removed books from SD, sidecars included (Mirror policy only).
+10. **Rewrite manifest** `/library/.calibre-sync.json`.
+11. **Reindex** — `StorageManager::refreshBooks()` so the library reflects the new/removed files.
+12. **Tear down WiFi**.
 
 Progress is reported via `ProgressCallback` with phases `"search"`, `"download"`,
 `"move"`, `"delete"`, `"done"`, `"error"` and a `current/total` count for percentage
@@ -317,6 +318,7 @@ against the routed destination to detect a retag.
 | Book in manifest, not in remote, policy = `Mirror` | Delete from SD |
 | Book in manifest, not in remote, policy = `Keep` | Leave on SD |
 | Any of the above would delete, move or overwrite the open book | Defer to the next sync |
+| Manifest entry shares its file with another entry (earlier collision) | Download again; the shared file is removed only once no book lives there |
 
 The folder axis is only consulted when the caller fills `RemoteEntry::path`. An empty
 path means "this caller does no routing" and the diff collapses to the original key-only
@@ -329,6 +331,25 @@ data the device already has, and — because reading progress and the prebuilt i
 sidecars keyed by *document path* — a naive rename of just the `.rsvp` would silently
 reset the reader to word zero and force a reindex. `moveBookFiles()` carries
 `.rstate.toml`, `.ridx` and `.rdat` along.
+
+**Filename collisions.** Files are named by sanitized title alone, so two books can
+route to the same file: equal titles ("Poems" by two authors), titles that differ only in
+accents or case (FAT ignores case), or titles equal up to the 72-character cap. Before
+diffing, `resolvePathCollisions()` lets one book keep the clean name and gives the others
+the Calibre id as a suffix: `Poems (12).rsvp`. The clean name goes to the book the manifest
+already records there, so a new same-titled book never renames the one on the card. If
+none is recorded there, it goes to the lowest id, so the choice stays stable from sync to
+sync. A path held by a departing book, or by a file the sync did not write (a companion
+upload, an RSS article), is not reused. "Did not write" is only decided when a manifest
+was read. On a first sync, or after the manifest is lost, existing files are adopted and
+overwritten in place, as before, rather than the whole library being duplicated under
+suffixed names. A move also refuses to replace an existing file. If that happens, the
+next sync sees the file and picks the suffixed name.
+
+Cards synced before this existed may have two manifest entries pointing at one file, which
+holds whichever book downloaded last. Those entries are downloaded again rather than
+trusted: the owner in place, the other to its suffixed name. The shared file is never
+removed while a book still lives there.
 
 **The open book is never touched.** The reader holds the open book's `.rsvp` and index
 sidecars open, so pulling them out from under it mid-read would break the session. This

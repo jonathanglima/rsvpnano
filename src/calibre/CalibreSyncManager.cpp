@@ -273,7 +273,14 @@ bool CalibreSyncManager::moveBookFiles(const String &from, const String &to) {
   if (from == to) {
     return true;
   }
-  sd().remove(to);
+  // resolvePathCollisions never routes a move onto an occupied path, so a file
+  // here is not ours to replace. Failing keeps the book where it is; the next
+  // sync sees the file and picks a suffixed name instead.
+  if (sd().exists(to)) {
+    Serial.printf("%s move %s -> %s refused: target exists\n", kLogTag,
+                  from.c_str(), to.c_str());
+    return false;
+  }
   if (!sd().rename(from, to)) {
     Serial.printf("%s move %s -> %s failed\n", kLogTag, from.c_str(), to.c_str());
     return false;
@@ -575,6 +582,7 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
 
   // 3. read the on-SD manifest.
   std::vector<calibresync::ManifestEntry> manifest;
+  bool manifestRead = false;
   {
     File mf = sd().open(manifestPath());
     if (mf && !mf.isDirectory()) {
@@ -583,14 +591,23 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
       while (mf.available()) {
         body += static_cast<char>(mf.read());
       }
-      parseManifest(body, manifest);
+      manifestRead = parseManifest(body, manifest);
     }
     if (mf) {
       mf.close();
     }
   }
 
-  // 4. diff (pure core).
+  // 4. give every book a file of its own, then diff (pure core).
+  // A file the manifest does not account for is only foreign when there is a
+  // manifest to account for it. Without one (first sync, or a lost/corrupt
+  // manifest) the card's .rsvp files are most likely our own earlier
+  // downloads: adopting them overwrites them in place, as before, instead of
+  // duplicating the whole library under suffixed names.
+  calibresync::resolvePathCollisions(
+      remote, manifest, [manifestRead](const String &path) {
+        return manifestRead && sd().exists(path);
+      });
   const calibresync::DeletionPolicy policy =
       settings.deletionPolicy == CalibreSettings::Mirror
           ? calibresync::DeletionPolicy::Mirror
@@ -726,10 +743,19 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     ++deleteIndex;
     report("delete", deleteIndex, static_cast<int>(plan.toDelete.size()),
            action.path);
+    // Counted either way: the book has left the library, even when its file
+    // stays behind for the book that shares it.
+    ++result.deleted;
+    if (action.keepFile) {
+      // Shared with a book that stays (an earlier filename collision); that
+      // book was re-downloaded into it above.
+      Serial.printf("%s deleted id=%d, kept shared %s\n", kLogTag, action.id,
+                    action.path.c_str());
+      continue;
+    }
     // Sidecars go with it: leaving <book>.rstate.toml and .ridx/.rdat behind
     // would slowly fill the card with state for books that are gone.
     removeBookFiles(action.path);
-    ++result.deleted;
     Serial.printf("%s deleted id=%d -> %s\n", kLogTag, action.id,
                   action.path.c_str());
   }

@@ -13,10 +13,12 @@
 //
 // IMPORTANT: this header must compile on the host. It includes only <Arduino.h>
 // (satisfied by the real core on-device, and by test/support/Arduino.h on the
-// host) plus <vector>. Do NOT add SD_MMC / WiFi / HTTPClient includes here.
+// host) plus standard headers. Do NOT add SD_MMC / WiFi / HTTPClient includes
+// here; card access is injected (see resolvePathCollisions).
 
 #include <Arduino.h>
 
+#include <cctype>
 #include <vector>
 
 namespace calibresync {
@@ -72,6 +74,9 @@ struct DownloadAction {
 struct DeleteAction {
   int id = 0;
   String path;
+  bool keepFile = false;  // the file is shared with a book that stays (left by
+                          // an earlier filename collision): forget the entry,
+                          // keep the bytes
 };
 
 // A book whose bytes are unchanged but which belongs in a different folder than
@@ -98,6 +103,125 @@ struct SyncPlan {
   // sync recomputes the same action once the book is closed.
   std::vector<int> deferred;
 };
+
+// FAT compares names case-insensitively, so paths that differ only in case
+// name the same file on the card.
+inline bool samePath(const String &a, const String &b) {
+  const char *x = a.c_str();
+  const char *y = b.c_str();
+  for (; *x != '\0' && *y != '\0'; ++x, ++y) {
+    if (std::tolower(static_cast<unsigned char>(*x)) !=
+        std::tolower(static_cast<unsigned char>(*y))) {
+      return false;
+    }
+  }
+  return *x == *y;
+}
+
+// "/library/books/Poems.rsvp" + 12 -> "/library/books/Poems (12).rsvp". Calibre
+// ids are unique, so suffixed names cannot collide with each other, and
+// sanitizeBaseName turns parentheses into '-', so no clean title-derived name
+// has this shape either (a book titled "Poems (12)" is "Poems -12-.rsvp").
+inline String withIdSuffix(const String &path, int id) {
+  const String suffix = String(" (") + String(id) + ")";
+  const int slash = path.lastIndexOf('/');
+  const int dot = path.lastIndexOf('.');
+  if (dot <= slash) {
+    return path + suffix;
+  }
+  return path.substring(0, dot) + suffix + path.substring(dot);
+}
+
+// True when another manifest entry records the same file -- the residue of a
+// filename collision from before resolvePathCollisions existed. Whatever bytes
+// are there belong to whichever book downloaded last.
+inline bool sharesFile(const std::vector<ManifestEntry> &manifest,
+                       const ManifestEntry &entry) {
+  for (const ManifestEntry &other : manifest) {
+    if (other.id != entry.id && samePath(other.path, entry.path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True when some remote book will live at path after this sync.
+inline bool targetedByRemote(const std::vector<RemoteEntry> &remote,
+                             const String &path) {
+  for (const RemoteEntry &r : remote) {
+    if (!r.path.isEmpty() && samePath(r.path, path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Gives every routed book a file of its own. destinationPath() names files by
+// sanitized title alone, so two books can route to one file: equal titles,
+// titles that differ only in accents or case, or titles equal up to the length
+// cap. One book keeps the clean name; the others get withIdSuffix().
+//
+// The clean name goes to, in order:
+//   1. a book the manifest already records there (lowest id if several), so
+//      adding a same-titled book never renames the one already on the card;
+//   2. nobody, when the manifest records it for a book that is not claiming
+//      it (deleted, retagged elsewhere, or kept by the Keep policy) or a file
+//      the sync did not write exists there (companion upload, RSS article);
+//   3. otherwise the lowest claiming id -- independent of search order, so the
+//      choice is stable from one sync to the next.
+//
+// existsOnCard(path) reports whether a file exists; injected so this stays
+// host-testable. Entries with an empty path (unrouted callers) are untouched.
+template <typename ExistsOnCard>
+void resolvePathCollisions(std::vector<RemoteEntry> &remote,
+                           const std::vector<ManifestEntry> &manifest,
+                           ExistsOnCard existsOnCard) {
+  const auto claims = [&remote](int id, const String &path) {
+    for (const RemoteEntry &r : remote) {
+      if (r.id == id && samePath(r.path, path)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Decide every owner from the clean paths before rewriting any of them.
+  std::vector<bool> keepsCleanName(remote.size(), false);
+  for (size_t i = 0; i < remote.size(); ++i) {
+    const String &path = remote[i].path;
+    if (path.isEmpty()) {
+      continue;
+    }
+    bool hasOwner = false;
+    int owner = 0;
+    bool held = false;
+    for (const ManifestEntry &m : manifest) {
+      if (!samePath(m.path, path)) {
+        continue;
+      }
+      held = true;
+      if (claims(m.id, path) && (!hasOwner || m.id < owner)) {
+        hasOwner = true;
+        owner = m.id;
+      }
+    }
+    if (!held && !existsOnCard(path)) {
+      for (const RemoteEntry &r : remote) {
+        if (samePath(r.path, path) && (!hasOwner || r.id < owner)) {
+          hasOwner = true;
+          owner = r.id;
+        }
+      }
+    }
+    keepsCleanName[i] = hasOwner && owner == remote[i].id;
+  }
+
+  for (size_t i = 0; i < remote.size(); ++i) {
+    if (!remote[i].path.isEmpty() && !keepsCleanName[i]) {
+      remote[i].path = withIdSuffix(remote[i].path, remote[i].id);
+    }
+  }
+}
 
 // Finds a manifest entry by id. Returns nullptr when absent.
 inline const ManifestEntry *findManifestEntry(
@@ -129,6 +253,12 @@ inline bool remoteHasId(const std::vector<RemoteEntry> &remote, int id) {
 //   * id in manifest, not in remote, policy == Mirror   -> toDelete
 //   * id in manifest, not in remote, policy == Keep     -> (left alone)
 //   * any of the above touching openPath                -> deferred
+//   * manifest entry sharing its file with another      -> toDownload (the
+//     bytes may be the other book's); never moved, and the shared file is only
+//     removed once no remote book lives there
+//
+// Paths are compared case-insensitively (samePath), like FAT does. Callers
+// that route should run resolvePathCollisions() on remote first.
 //
 // openPath is the book currently open in the reader (empty when none). Its
 // .rsvp and index sidecars are held open, so deleting, moving or overwriting
@@ -146,7 +276,7 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
                                 const String &openPath = String()) {
   SyncPlan plan;
   const auto isOpen = [&openPath](const String &path) {
-    return !openPath.isEmpty() && path == openPath;
+    return !openPath.isEmpty() && samePath(path, openPath);
   };
 
   // Pass 1: walk the remote view, deciding download vs move vs unchanged.
@@ -155,9 +285,11 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
     // A routed path that matches nothing on SD only matters while the bytes are
     // current; a changed key re-downloads to the new location anyway.
     const bool routed = !r.path.isEmpty();
-    const bool relocated = routed && existing != nullptr && existing->path != r.path;
+    const bool relocated =
+        routed && existing != nullptr && !samePath(existing->path, r.path);
+    const bool shared = existing != nullptr && sharesFile(manifest, *existing);
 
-    if (existing != nullptr && existing->key == r.key && !relocated) {
+    if (existing != nullptr && existing->key == r.key && !relocated && !shared) {
       plan.unchanged.push_back(r.id);
       continue;
     }
@@ -167,8 +299,8 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
       continue;
     }
 
-    if (existing != nullptr && existing->key == r.key) {
-      // Same bytes, different folder: the retag move.
+    if (existing != nullptr && existing->key == r.key && !shared) {
+      // Same bytes, new path: a retag, or a rename in Calibre.
       MoveAction move;
       move.id = r.id;
       move.key = r.key;
@@ -186,8 +318,9 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
     action.title = r.title;
     action.path = r.path;
     // Only worth reporting when it actually differs -- otherwise the caller
-    // would delete the file it just wrote.
-    if (relocated) {
+    // would delete the file it just wrote -- and when no other book will live
+    // there (a shared file stays with the book that keeps the name).
+    if (relocated && !targetedByRemote(remote, existing->path)) {
       action.previousPath = existing->path;
     }
     plan.toDownload.push_back(action);
@@ -204,6 +337,7 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
         DeleteAction action;
         action.id = m.id;
         action.path = m.path;
+        action.keepFile = targetedByRemote(remote, m.path);
         plan.toDelete.push_back(action);
       }
     }

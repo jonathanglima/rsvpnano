@@ -9,7 +9,9 @@
 // the folder-routing axis: retag-only moves, retag+edit downloads that report
 // the old path, and the unrouted caller that must keep the key-only behaviour.
 // Also the open-book guard: any action that would touch the book open in the
-// reader is deferred, never planned.
+// reader is deferred, never planned. And filename collisions: two books that
+// route to the same file get distinct paths, and a file shared by an earlier
+// collision is re-downloaded rather than trusted, moved or deleted.
 
 #include <cstdio>
 #include <string>
@@ -21,6 +23,7 @@ using calibresync::computeSyncPlan;
 using calibresync::DeletionPolicy;
 using calibresync::ManifestEntry;
 using calibresync::RemoteEntry;
+using calibresync::resolvePathCollisions;
 using calibresync::SyncPlan;
 
 static int g_failures = 0;
@@ -61,11 +64,14 @@ RemoteEntry remote(int id, const char *key, const char *title = "T",
   return r;
 }
 
-ManifestEntry manifest(int id, const char *key, const char *path = "/books/books/x.rsvp") {
+// The default path is unique per id, like a real manifest: entries sharing a
+// file are the collision residue that computeSyncPlan treats specially.
+ManifestEntry manifest(int id, const char *key, const char *path = nullptr) {
   ManifestEntry m;
   m.id = id;
   m.key = key;
-  m.path = path;
+  m.path = path != nullptr ? String(path)
+                           : String("/books/books/") + String(id) + ".rsvp";
   return m;
 }
 
@@ -453,6 +459,203 @@ void test_no_open_book_defers_nothing() {
   CHECK(plan.toDelete.size() == 1);
 }
 
+const RemoteEntry *remoteFor(const std::vector<RemoteEntry> &r, int id) {
+  for (const auto &e : r) {
+    if (e.id == id) {
+      return &e;
+    }
+  }
+  return nullptr;
+}
+
+const auto kNothingOnCard = [](const String &) { return false; };
+
+void test_with_id_suffix() {
+  std::printf("test_with_id_suffix\n");
+  CHECK_STR_EQ("/library/books/Poems (12).rsvp",
+               calibresync::withIdSuffix("/library/books/Poems.rsvp", 12).c_str());
+  CHECK_STR_EQ("/library/books/Poems (12)",
+               calibresync::withIdSuffix("/library/books/Poems", 12).c_str());
+}
+
+void test_new_books_with_same_title_get_distinct_paths() {
+  std::printf("test_new_books_with_same_title_get_distinct_paths\n");
+  std::vector<RemoteEntry> r{routed(9, "1|t", "/library/books/Poems.rsvp"),
+                             routed(4, "2|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m;
+  resolvePathCollisions(r, m, kNothingOnCard);
+  // Lowest id keeps the clean name, independent of search order.
+  CHECK_STR_EQ("/library/books/Poems.rsvp", remoteFor(r, 4)->path.c_str());
+  CHECK_STR_EQ("/library/books/Poems (9).rsvp", remoteFor(r, 9)->path.c_str());
+}
+
+void test_collision_ignores_case() {
+  std::printf("test_collision_ignores_case\n");
+  // FAT is case-insensitive: these are the same file on the card.
+  std::vector<RemoteEntry> r{routed(1, "1|t", "/library/books/Poems.rsvp"),
+                             routed(2, "2|t", "/library/books/POEMS.rsvp")};
+  std::vector<ManifestEntry> m;
+  resolvePathCollisions(r, m, kNothingOnCard);
+  CHECK_STR_EQ("/library/books/Poems.rsvp", remoteFor(r, 1)->path.c_str());
+  CHECK_STR_EQ("/library/books/POEMS (2).rsvp", remoteFor(r, 2)->path.c_str());
+}
+
+void test_book_already_on_card_keeps_clean_name() {
+  std::printf("test_book_already_on_card_keeps_clean_name\n");
+  // id 7 has the file; a newer, lower-id book with the same title must not
+  // take the name and force a rename of the book already there.
+  std::vector<RemoteEntry> r{routed(7, "1|t", "/library/books/Poems.rsvp"),
+                             routed(3, "2|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m{manifest(7, "1|t", "/library/books/Poems.rsvp")};
+  resolvePathCollisions(r, m, kNothingOnCard);
+  CHECK_STR_EQ("/library/books/Poems.rsvp", remoteFor(r, 7)->path.c_str());
+  CHECK_STR_EQ("/library/books/Poems (3).rsvp", remoteFor(r, 3)->path.c_str());
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.unchanged.size() == 1);
+  CHECK(downloadFor(plan, 3) != nullptr);
+}
+
+void test_path_held_by_departing_book_is_not_reused() {
+  std::printf("test_path_held_by_departing_book_is_not_reused\n");
+  // id 1 left Calibre (Mirror deletes it after downloads run); a new book with
+  // the same title must not land on the file that is about to be deleted.
+  std::vector<RemoteEntry> r{routed(2, "2|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m{manifest(1, "1|t", "/library/books/Poems.rsvp")};
+  resolvePathCollisions(r, m, kNothingOnCard);
+  CHECK_STR_EQ("/library/books/Poems (2).rsvp", remoteFor(r, 2)->path.c_str());
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(deleteHas(plan, 1));
+  CHECK_STR_EQ("/library/books/Poems (2).rsvp", downloadFor(plan, 2)->path.c_str());
+}
+
+void test_foreign_file_is_not_overwritten() {
+  std::printf("test_foreign_file_is_not_overwritten\n");
+  // A companion upload or RSS article already sits at the clean path.
+  std::vector<RemoteEntry> r{routed(5, "1|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m;
+  resolvePathCollisions(r, m, [](const String &path) {
+    return path == "/library/books/Poems.rsvp";
+  });
+  CHECK_STR_EQ("/library/books/Poems (5).rsvp", remoteFor(r, 5)->path.c_str());
+}
+
+void test_own_file_is_not_foreign() {
+  std::printf("test_own_file_is_not_foreign\n");
+  std::vector<RemoteEntry> r{routed(5, "1|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m{manifest(5, "1|t", "/library/books/Poems.rsvp")};
+  resolvePathCollisions(r, m, [](const String &) { return true; });
+  CHECK_STR_EQ("/library/books/Poems.rsvp", remoteFor(r, 5)->path.c_str());
+}
+
+void test_unrouted_entries_are_left_alone() {
+  std::printf("test_unrouted_entries_are_left_alone\n");
+  std::vector<RemoteEntry> r{remote(1, "1|t"), remote(2, "2|t")};
+  std::vector<ManifestEntry> m;
+  resolvePathCollisions(r, m, kNothingOnCard);
+  CHECK(r[0].path.isEmpty());
+  CHECK(r[1].path.isEmpty());
+}
+
+void test_retag_away_does_not_hand_old_path_to_new_book() {
+  std::printf("test_retag_away_does_not_hand_old_path_to_new_book\n");
+  // Downloads run before moves: if the new book took /books/A.rsvp it would
+  // overwrite id 1's file before id 1 is moved out of it.
+  std::vector<RemoteEntry> r{routed(1, "1|t", "/library/articles/A.rsvp"),
+                             routed(2, "2|t", "/library/books/A.rsvp")};
+  std::vector<ManifestEntry> m{manifest(1, "1|t", "/library/books/A.rsvp")};
+  resolvePathCollisions(r, m, kNothingOnCard);
+  CHECK_STR_EQ("/library/books/A (2).rsvp", remoteFor(r, 2)->path.c_str());
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(moveFor(plan, 1) != nullptr);
+  CHECK_STR_EQ("/library/books/A (2).rsvp", downloadFor(plan, 2)->path.c_str());
+}
+
+void test_title_swap_converges_without_overwriting() {
+  std::printf("test_title_swap_converges_without_overwriting\n");
+  // Two books swap titles in Calibre. Each clean name is still held by the
+  // other book, so neither move may target it; both take a suffixed name.
+  std::vector<RemoteEntry> r{routed(1, "1|t", "/library/books/B.rsvp"),
+                             routed(2, "2|t", "/library/books/A.rsvp")};
+  std::vector<ManifestEntry> m{manifest(1, "1|t", "/library/books/A.rsvp"),
+                               manifest(2, "2|t", "/library/books/B.rsvp")};
+  resolvePathCollisions(r, m, kNothingOnCard);
+  const SyncPlan first = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(first.toMove.size() == 2);
+  CHECK_STR_EQ("/library/books/B (1).rsvp", moveFor(first, 1)->to.c_str());
+  CHECK_STR_EQ("/library/books/A (2).rsvp", moveFor(first, 2)->to.c_str());
+
+  // Next sync: the clean names are free, so each book moves onto its own.
+  std::vector<RemoteEntry> r2{routed(1, "1|t", "/library/books/B.rsvp"),
+                              routed(2, "2|t", "/library/books/A.rsvp")};
+  std::vector<ManifestEntry> m2{manifest(1, "1|t", "/library/books/B (1).rsvp"),
+                                manifest(2, "2|t", "/library/books/A (2).rsvp")};
+  resolvePathCollisions(r2, m2, kNothingOnCard);
+  const SyncPlan second = computeSyncPlan(r2, m2, DeletionPolicy::Mirror);
+  CHECK_STR_EQ("/library/books/B.rsvp", moveFor(second, 1)->to.c_str());
+  CHECK_STR_EQ("/library/books/A.rsvp", moveFor(second, 2)->to.c_str());
+
+  // And then it is stable.
+  std::vector<RemoteEntry> r3{routed(1, "1|t", "/library/books/B.rsvp"),
+                              routed(2, "2|t", "/library/books/A.rsvp")};
+  std::vector<ManifestEntry> m3{manifest(1, "1|t", "/library/books/B.rsvp"),
+                                manifest(2, "2|t", "/library/books/A.rsvp")};
+  resolvePathCollisions(r3, m3, kNothingOnCard);
+  const SyncPlan third = computeSyncPlan(r3, m3, DeletionPolicy::Mirror);
+  CHECK(third.toMove.empty());
+  CHECK(third.toDownload.empty());
+  CHECK(third.unchanged.size() == 2);
+}
+
+void test_shared_file_from_earlier_collision_is_redownloaded() {
+  std::printf("test_shared_file_from_earlier_collision_is_redownloaded\n");
+  // Before collision handling both books were written to the same file, so it
+  // holds whichever downloaded last. Neither copy can be trusted: the owner
+  // re-downloads in place, the other re-downloads to its suffixed path, and
+  // the shared file is not removed as anyone's previousPath.
+  std::vector<RemoteEntry> r{routed(1, "1|t", "/library/books/Poems.rsvp"),
+                             routed(2, "2|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m{manifest(1, "1|t", "/library/books/Poems.rsvp"),
+                               manifest(2, "2|t", "/library/books/Poems.rsvp")};
+  resolvePathCollisions(r, m, kNothingOnCard);
+  CHECK_STR_EQ("/library/books/Poems.rsvp", remoteFor(r, 1)->path.c_str());
+  CHECK_STR_EQ("/library/books/Poems (2).rsvp", remoteFor(r, 2)->path.c_str());
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.toMove.empty());
+  CHECK(plan.unchanged.empty());
+  CHECK(downloadFor(plan, 1) != nullptr);
+  CHECK(downloadFor(plan, 2) != nullptr);
+  CHECK(downloadFor(plan, 1)->previousPath.isEmpty());
+  CHECK(downloadFor(plan, 2)->previousPath.isEmpty());
+}
+
+void test_shared_file_survives_delete_of_one_holder() {
+  std::printf("test_shared_file_survives_delete_of_one_holder\n");
+  std::vector<RemoteEntry> r{routed(2, "2|t", "/library/books/Poems.rsvp")};
+  std::vector<ManifestEntry> m{manifest(1, "1|t", "/library/books/Poems.rsvp"),
+                               manifest(2, "2|t", "/library/books/Poems.rsvp")};
+  resolvePathCollisions(r, m, kNothingOnCard);
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(deleteHas(plan, 1));
+  for (const auto &d : plan.toDelete) {
+    if (d.id == 1) {
+      CHECK(d.keepFile);
+    }
+  }
+  CHECK(downloadFor(plan, 2) != nullptr);
+}
+
+void test_shared_file_removed_when_all_holders_leave() {
+  std::printf("test_shared_file_removed_when_all_holders_leave\n");
+  std::vector<RemoteEntry> r;
+  std::vector<ManifestEntry> m{manifest(1, "1|t", "/library/books/Poems.rsvp"),
+                               manifest(2, "2|t", "/library/books/Poems.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.toDelete.size() == 2);
+  for (const auto &d : plan.toDelete) {
+    CHECK(!d.keepFile);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -480,6 +683,19 @@ int main() {
   test_open_book_retag_and_edit_is_deferred();
   test_unchanged_open_book_is_not_deferred();
   test_no_open_book_defers_nothing();
+  test_with_id_suffix();
+  test_new_books_with_same_title_get_distinct_paths();
+  test_collision_ignores_case();
+  test_book_already_on_card_keeps_clean_name();
+  test_path_held_by_departing_book_is_not_reused();
+  test_foreign_file_is_not_overwritten();
+  test_own_file_is_not_foreign();
+  test_unrouted_entries_are_left_alone();
+  test_retag_away_does_not_hand_old_path_to_new_book();
+  test_title_swap_converges_without_overwriting();
+  test_shared_file_from_earlier_collision_is_redownloaded();
+  test_shared_file_survives_delete_of_one_holder();
+  test_shared_file_removed_when_all_holders_leave();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   if (g_failures == 0) {
