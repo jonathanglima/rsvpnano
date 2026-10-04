@@ -604,6 +604,13 @@ void App::updateBackgroundJob() {
             showTransientStatus("RSS", update.line1, update.line2, 1400, screens::Screen::Reader);
             return;
         }
+        if (completed == JobKind::CalibreSync) {
+            // The library cache only rebuilds when the book count changes, so a
+            // retag move (same count, new path) would otherwise leave stale entries.
+            libraryScreen_.invalidate();
+            showTransientStatus("Calibre", update.line1, update.line2, 1800, screens::Screen::Device);
+            return;
+        }
         if (completed == JobKind::StorageCheck) {
             showTransientStatus(immediateUi_.text(UiText::Storage), update.line1, update.line2, 1800,
                                 screens::Screen::Device);
