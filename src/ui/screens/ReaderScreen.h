@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Preferences.h>
+#include <array>
 #include <functional>
 #include <optional>
 #include <span>
@@ -16,6 +17,7 @@
 #include "text/BidiText.h"
 #include "ui/Ui.h"
 #include "ui/screens/PageReaderScreen.h"
+#include "ui/screens/Screens.h"
 
 namespace screens {
 
@@ -30,8 +32,10 @@ namespace screens {
         void applyTheme(const ui::themes::Theme& theme);
         void releaseRuntimeCaches();
         void refreshTypography();
+        bool appearance(ui::Context& ui, Screen& screen);
         void refreshTypography(const settings::ReadingSettings& settings, const settings::ReadingOverrides& overrides);
         bool openBook(ui::Context& ui, StorageManager& storage, Preferences& preferences, size_t index, uint32_t nowMs);
+        void closeBook();
         void prepareBookOpen(Preferences& preferences, uint32_t nowMs);
         void finishBookOpen(Preferences& preferences, uint32_t nowMs);
         void loadInitialBook(ui::Context& ui, StorageManager& storage, Preferences& preferences, uint32_t nowMs);
@@ -48,12 +52,22 @@ namespace screens {
 
     private:
         int focusOffset(std::string_view word) const;
+        void drawGuides(ui::Context& ui, Arduino_GFX& output, int16_t anchor, int16_t baseline);
         int16_t wordAdvance(std::span<const BidiText::Codepoint> word) const;
-        void drawPhantom(std::string_view value, bool rightToLeft, int16_t edge, bool extendsLeft, int16_t baseline,
-                         bool vertical, ui::Context& ui);
-        void drawWord(std::string_view word, int16_t x, int16_t baseline, int focus, bool vertical, ui::Context& ui);
+        struct Phantom {
+            std::vector<BidiText::Codepoint> visual;
+            std::vector<ui::fonts::PositionedGlyph> glyphs;
+            int16_t width = 0;
+            bool shaped = false;
+            bool bidi = false;
+        };
+        void preparePhantom(Phantom& phantom, std::string_view value, bool rightToLeft);
+        void drawPhantom(const Phantom& phantom, std::string_view value, int16_t edge, bool extendsLeft,
+                         int16_t baseline, int16_t centerY, bool vertical, ui::Context& ui);
+        void drawWord(std::string_view word, int16_t x, int16_t baseline, int16_t centerY, int focus, bool vertical,
+                      ui::Context& ui);
         void drawWord(std::span<const BidiText::Codepoint> word, int16_t x, int16_t baseline, size_t wordOffset,
-                      int focus, bool vertical, ui::Context& ui);
+                      int16_t centerY, int focus, bool vertical, ui::Context& ui);
         std::string phantomBefore(const ReadingSession& reader, uint8_t sizeIndex) const;
         std::string phantomAfter(const ReadingSession& reader, uint8_t sizeIndex) const;
         uint32_t frameSignature(std::string_view word, bool overlayVisible, bool cjkPacing,
@@ -83,7 +97,8 @@ namespace screens {
         void prefetchNextWord(uint32_t nowMs);
         FontCatalog::Face pageTypeface(size_t wordIndex);
 
-        Arduino_GFX& gfx_;
+        int16_t width_;
+        int16_t height_;
         mutable ui::fonts::AlphaTextRenderer<640> text_;
         settings::ReadingSettings& settings_;
         FontCatalog::Face face_;
@@ -100,6 +115,8 @@ namespace screens {
         settings::TypographySettings typography_;
         uint16_t background_ = 0;
         bool touching_ = false;
+        uint8_t appearancePage_ = 0;
+        uint8_t appearanceDialPage_ = 0;
         uint16_t touchStartX_ = 0;
         uint16_t touchStartY_ = 0;
         size_t touchStartWord_ = 0;
@@ -120,8 +137,7 @@ namespace screens {
         std::vector<ui::fonts::PositionedGlyph> rsvpGlyphs_;
         BidiText::Analysis phantomBidi_;
         BidiText::Line phantomLine_;
-        std::vector<BidiText::Codepoint> phantomVisual_;
-        std::vector<ui::fonts::PositionedGlyph> phantomGlyphs_;
+        std::array<Phantom, 2> phantoms_;
         bool pagePreview_ = false;
         uint32_t paragraphTickMs_ = 0;
         int32_t paragraphRemainder_ = 0;

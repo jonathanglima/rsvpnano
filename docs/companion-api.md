@@ -7,6 +7,18 @@ demand for the active screen; they are not a bootstrap sequence and are not comb
 aggregate endpoint. A failure from one resource does not imply that the transport or device session
 was lost.
 
+## Browser connections
+
+The hosted companion uses HTTPS while the reader serves HTTP on the local network.
+Device requests set the fetch option `targetAddressSpace: "local"` through Ktor;
+internet catalog and release downloads use a separate client without that option.
+Supporting browsers can then ask for local-network permission for device hostnames
+as well as private IP addresses. The firmware also handles CORS preflights for
+`DELETE` and uploads. CORS headers alone do not remove browser mixed-content restrictions.
+See [Chrome's Local Network Access documentation](https://developer.chrome.com/blog/local-network-access).
+If the browser blocks local-network access, allow that site permission or connect
+over USB in a browser supporting Web Serial.
+
 ## Responses
 
 | Method | Path | Success response |
@@ -54,6 +66,17 @@ The device sends only data the companion cannot derive locally:
 
 Uploads use an `application/octet-stream` body. Library entries and themes take the URL-encoded `name` query parameter; fonts use the validated RFont4 header, and locale packs use their manifest.
 
+Deleting an open book returns `409 resource_in_use`. After the user confirms
+"Delete anyway", retry `DELETE /api/v2/library/{id}?force=true`. The reader closes
+the book and clears its reading session before removing the files. If removal
+fails, the book remains closed and its saved progress is retained.
+
+The companion also confirms catalog removals. For a selected theme, font, or
+locale, the popup explains that deletion switches to the built-in option. After
+confirmation, the companion uses the existing appearance selection endpoint
+before deleting the asset. Firmware still rejects deletion of selected assets
+and built-in fonts/themes; clients must not silently change the selection.
+
 ## Errors
 
 Errors use their HTTP status and a JSON body with a stable developer-facing code and message. Validation errors may also identify the affected field.
@@ -79,3 +102,9 @@ The default run performs three complete read passes and reports request latency.
 Use `--no-upload --base-url http://DEVICE_IP` to rerun against API-test firmware already installed. The hardware test is skipped during ordinary Gradle checks unless `RSVPNANO_DEVICE_URL` is set.
 
 The implementation is organized by domain under `src/companion`; the main app contains no benchmark or API-test branches.
+
+### USB connection lifetime
+
+USB companion sessions remain open until the host closes the port, the cable disconnects, or a transport error ends the session. There is no idle timeout and the browser sends no periodic keepalive probes. The browser asserts DTR and RTS when opening the serial port; firmware uses the native CDC connection state to release abandoned sessions.
+
+Firmware advertises this behavior with `RSVPNANO/COMPANION/1 READY persistent\n`. The browser requires this capability and requests a firmware update for older devices with timed sessions. Existing clients can still send Ping frames and receive Pong responses.

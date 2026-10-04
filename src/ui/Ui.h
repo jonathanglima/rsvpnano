@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <string>
 #include <string_view>
@@ -19,7 +20,13 @@
 #include "ui/Theme.h"
 #include "ui/Touch.h"
 
+#ifdef RSVP_BOARD_CONFIG_HEADER
+#include "board/BoardConfig.h"
+#endif
+
 namespace ui {
+
+    struct PagedGrid;
 
     struct Rect {
         int16_t x = 0;
@@ -131,6 +138,20 @@ namespace ui {
         Inline,
     };
 
+    // Local to one draw: font storage can change at beginFrame or when language assets are replaced.
+    struct TextLayout {
+        struct Line {
+            std::string text;
+            const uint8_t* font = nullptr;
+            uint8_t size = 1;
+            int16_t x = 0;
+            int16_t y = 0;
+            Rect ink;
+        };
+        std::vector<Line> lines;
+        size_t consumed = 0;
+    };
+
     class Context {
     public:
         static constexpr size_t kSlotCapacity = 64;
@@ -138,6 +159,92 @@ namespace ui {
                                                                                         const locales::InstalledPack&);
 
         explicit Context(Arduino_GFX& gfx);
+
+        static constexpr uint8_t displayWriteAlignment() {
+#ifdef RSVP_BOARD_CONFIG_HEADER
+            return Board::Config::DISPLAY_WRITE_ALIGNMENT;
+#else
+            return 1;
+#endif
+        }
+
+        Rect paintBounds(Rect rect) const;
+
+        // The callback paints one owned opaque region. Interaction and layout happen before this call.
+        template<typename Draw>
+        void paint(Rect rect, Draw&& draw) {
+            if constexpr (displayWriteAlignment() == 1) {
+                draw(gfx_, rect);
+                markDrawn();
+            } else {
+                rect = paintBounds(rect);
+                if (rect.w <= 0 || rect.h <= 0)
+                    return;
+                Arduino_Canvas* buffer = paintBuffer();
+                if (buffer == nullptr) {
+                    invalidate();
+                    return;
+                }
+                const uint8_t rotation = static_cast<uint8_t>(touchOrientation_);
+                buffer->setRotation(rotation);
+                const int16_t panelW = gfx_.width(), panelH = gfx_.height();
+                const int16_t pitch = (rotation & 1U) ? buffer->height() : buffer->width();
+                const int16_t rows = (rotation & 1U) ? buffer->width() : buffer->height();
+                Rect window = rect;
+                switch (rotation) {
+                case 1:
+                    window = {static_cast<int16_t>(panelW - rect.y - rect.h), rect.x, rect.h, rect.w};
+                    break;
+                case 2:
+                    window = {static_cast<int16_t>(panelW - rect.x - rect.w),
+                              static_cast<int16_t>(panelH - rect.y - rect.h), rect.w, rect.h};
+                    break;
+                case 3:
+                    window = {rect.y, static_cast<int16_t>(panelH - rect.x - rect.w), rect.h, rect.w};
+                    break;
+                default:
+                    break;
+                }
+                window = intersection(window, {0, 0, panelW, panelH});
+                if (window.w <= 0 || window.h <= 0)
+                    return;
+                for (int16_t y = window.y; y < window.y + window.h; y += rows) {
+                    const int16_t count = std::min<int16_t>(rows, window.y + window.h - y);
+                    int16_t dx = -window.x, dy = -y;
+                    switch (rotation) {
+                    case 1:
+                        dx = -y;
+                        dy = pitch - panelW + window.x;
+                        break;
+                    case 2:
+                        dx = pitch - panelW + window.x;
+                        dy = y - panelH + rows;
+                        break;
+                    case 3:
+                        dx = y - panelH + rows;
+                        dy = -window.x;
+                        break;
+                    default:
+                        break;
+                    }
+                    // Font decoding uses logical bounds; the canvas clips pixels to this strip.
+                    buffer->setTextBound(dx, dy, width(), height());
+                    uint16_t* pixels = buffer->getFramebuffer();
+                    const uint16_t background = color(themes::Background);
+                    for (int16_t row = 0; row < count; ++row)
+                        std::fill_n(pixels + row * pitch, window.w, background);
+                    draw(*buffer,
+                         Rect{static_cast<int16_t>(rect.x + dx), static_cast<int16_t>(rect.y + dy), rect.w, rect.h});
+                    // Canvas rows retain their full pitch; the panel takes a tightly packed rectangle.
+                    if (window.w != pitch)
+                        for (int16_t row = 1; row < count; ++row)
+                            std::memmove(pixels + row * window.w, pixels + row * pitch,
+                                         static_cast<size_t>(window.w) * sizeof(*pixels));
+                    gfx_.draw16bitRGBBitmap(window.x, y, pixels, window.w, count);
+                }
+                markDrawn();
+            }
+        }
 
         void setTheme(const ui::themes::Theme& theme);
         void setLanguageCatalog(fs::FS* filesystem, const locales::Catalog* catalog, LanguageFontLoader fontLoader);
@@ -160,7 +267,7 @@ namespace ui {
 
         void label(Rect rect, std::string_view text, uint8_t textSize = 2,
                    ui::themes::ColorRole role = ui::themes::ColorRole::Foreground, TextAlign align = TextAlign::Start,
-                   uint8_t textLines = 1, std::string_view textLocale = {});
+                   uint8_t textLines = 1, std::string_view textLocale = {}, uint8_t alpha = 255);
         void separator(Rect rect, std::string_view text);
         bool setting(Rect rect, std::string_view label, std::string_view value,
                      SettingLayout layout = SettingLayout::Stacked);
@@ -169,8 +276,23 @@ namespace ui {
         bool button(Rect rect, std::string_view text, bool enabled = true, Icon icon = Icon::None,
                     uint8_t textLines = 1, std::string_view detailLeft = {}, std::string_view detailRight = {});
         bool iconButton(Rect rect, Icon icon);
+        bool card(Rect rect, std::string_view title, std::string_view detail = {}, uint8_t textSize = 3,
+                  ui::themes::ColorRole role = ui::themes::ColorRole::Accent, Icon icon = Icon::None,
+                  bool enabled = true, uint8_t alpha = 255);
+        bool dockItem(Rect rect, std::string_view label, Icon icon, uint16_t accent);
+        size_t fixedText(Rect rect, std::string_view text, uint8_t textSize, uint16_t ink,
+                         TextAlign align = TextAlign::Center, uint8_t maxLines = 2, bool ellipsis = true);
+        void progressRing(Rect rect, int value, int maximum = 100,
+                          ui::themes::ColorRole role = ui::themes::ColorRole::Accent);
+        bool rotary(Rect rect, int& value, int minimum, int maximum, int step, std::string_view label = {});
+        PagedGrid pagedGrid(Rect rect, size_t count, uint8_t columns = 1, int16_t minimumHeight = 54);
         bool tab(Rect rect, std::string_view text, bool active, Icon icon = Icon::None);
-        void battery(Rect rect, uint8_t percent, bool charging, std::string_view label, bool showIcon = true);
+        struct BatteryLayout {
+            Rect icon, label;
+        };
+        BatteryLayout batteryLayout(Rect rect, std::string_view label, bool showIcon = true) const;
+        void battery(Rect rect, uint8_t percent, bool charging, std::string_view label, bool showIcon = true,
+                     uint8_t iconAlpha = 255, uint8_t labelAlpha = 255);
         void progress(Rect rect, int value, int minimum = 0, int maximum = 100);
         void steps(Rect rect, uint8_t current, uint8_t total,
                    ui::themes::ColorRole activeRole = ui::themes::ColorRole::Accent);
@@ -221,13 +343,18 @@ namespace ui {
         void hourglass(Rect rect, uint16_t progressPermille, bool paused = false, bool complete = false,
                        ui::themes::ColorRole sandRole = ui::themes::ColorRole::Accent, bool reversed = false,
                        std::string_view time = {});
-        bool redraw(Rect rect, uint32_t signature);
+        // Opaque regions replace their background during paint; partial custom drawing still needs a clear.
+        bool redraw(Rect rect, uint32_t signature, bool opaque = false);
         void markDrawn();
         void drawText(Rect rect, std::string_view text, uint8_t textSize, uint16_t color,
                       TextAlign align = TextAlign::Start, uint8_t maxLines = 1, std::string_view textLocale = {});
+        TextLayout prepareText(Rect rect, std::string_view text, uint8_t textSize, TextAlign align = TextAlign::Start,
+                               uint8_t maxLines = 1, std::string_view textLocale = {});
+        TextLayout prepareFixedText(Rect rect, std::string_view text, uint8_t textSize,
+                                    TextAlign align = TextAlign::Center, uint8_t maxLines = 2, bool ellipsis = true);
+        void drawText(Arduino_GFX& output, const TextLayout& layout, uint16_t color, int16_t dx = 0, int16_t dy = 0);
         void portraitText(Rect rect, std::string_view text, uint8_t textSize, uint16_t color,
-                          TextAlign align = TextAlign::Start, uint8_t maxLines = 1,
-                          std::string_view textLocale = {});
+                          TextAlign align = TextAlign::Start, uint8_t maxLines = 1, std::string_view textLocale = {});
         void portraitVerticalText(Rect rect, std::string_view text, uint8_t textSize, uint16_t color,
                                   std::string_view textLocale = {});
         void portraitBattery(Rect rect, uint8_t percent, bool charging, std::string_view label, bool showIcon);
@@ -238,9 +365,13 @@ namespace ui {
             return gfx_;
         }
         int16_t width() const {
+            if constexpr (displayWriteAlignment() > 1)
+                return (static_cast<uint8_t>(touchOrientation_) & 1U) ? gfx_.height() : gfx_.width();
             return gfx_.width();
         }
         int16_t height() const {
+            if constexpr (displayWriteAlignment() > 1)
+                return (static_cast<uint8_t>(touchOrientation_) & 1U) ? gfx_.width() : gfx_.height();
             return gfx_.height();
         }
         static uint32_t signature(std::string_view text, uint32_t seed = Fnv1a::kOffsetBasis);
@@ -262,7 +393,14 @@ namespace ui {
             Stepper,
             Dial,
             Battery,
+            Card,
+            Dock,
+            Ring,
+            Rotary,
+            Hourglass,
+            KeyboardInput,
             Custom,
+            Opaque,
             Touch
         };
 
@@ -279,26 +417,27 @@ namespace ui {
         };
 
         Claim claim(Kind kind, Rect rect, uint32_t signature);
+        Arduino_Canvas* paintBuffer();
         void clear(Rect rect);
-        void drawIcon(Rect rect, Icon icon, uint16_t color, uint16_t surface);
-        void drawBookmarkIcon(Rect rect, uint16_t ink, uint16_t surface);
-        void drawBooksIcon(Rect rect, uint16_t ink);
-        void drawEditIcon(Rect rect, uint16_t ink);
-        void drawDeviceIcon(Rect rect, uint16_t ink);
-        void drawLanguageIcon(Rect rect, uint16_t ink);
-        void drawHourglassIcon(Rect rect, uint16_t ink);
-        void drawPowerIcon(Rect rect, uint16_t ink, uint16_t surface);
+        void drawIcon(Arduino_GFX& output, Rect rect, Icon icon, uint16_t color, uint16_t surface);
+        void drawBookmarkIcon(Arduino_GFX& output, Rect rect, uint16_t ink, uint16_t surface);
+        void drawBooksIcon(Arduino_GFX& output, Rect rect, uint16_t ink);
+        void drawEditIcon(Arduino_GFX& output, Rect rect, uint16_t ink);
+        void drawDeviceIcon(Arduino_GFX& output, Rect rect, uint16_t ink);
+        void drawLanguageIcon(Arduino_GFX& output, Rect rect, uint16_t ink);
+        void drawHourglassIcon(Arduino_GFX& output, Rect rect, uint16_t ink);
+        void drawPowerIcon(Arduino_GFX& output, Rect rect, uint16_t ink, uint16_t surface);
         void drawBatteryIcon(Arduino_GFX& output, Rect rect, uint8_t percent, bool charging, uint16_t ink,
                              uint16_t surface);
-        void drawText(Arduino_GFX& output, Rect rect, std::string_view text, uint8_t textSize, uint16_t color,
-                      TextAlign align, uint8_t maxLines, std::string_view textLocale);
         int valueAt(Rect rect, uint16_t x, int minimum, int maximum, int step) const;
-        bool tapped(size_t slot, Rect rect);
+        bool tapped(size_t slot, Rect rect, bool enabled = true);
         bool sliderValue(Rect rect, std::string_view label, int& value, int minimum, int maximum, int step,
                          std::string_view suffix, ui::themes::ColorRole activeRole);
         bool stepperValue(Rect rect, std::string_view label, int& value, int minimum, int maximum, int step,
                           std::string_view suffix, ui::themes::ColorRole activeRole);
         void resetTouchGesture();
+        void appendText(TextLayout& layout, Rect rect, std::string_view text, uint8_t textSize, TextAlign align,
+                        uint8_t maxLines, std::string_view textLocale = {});
         const locales::UiAssets* fontAssetsFor(std::string_view text, std::string_view textLocale = {}) const;
         int16_t textWidthFor(std::string_view text, uint8_t size, std::string_view textLocale = {}) const;
         int16_t textHeightFor(std::string_view text, uint8_t size, std::string_view textLocale = {}) const;
@@ -337,6 +476,11 @@ namespace ui {
         int capturedScalarInitialValue_ = 0;
         int8_t capturedStepperDirection_ = 0;
         uint8_t screen_ = 0xFF;
+        size_t gridPage_ = 0;
+        bool rotaryDragging_ = false;
+        Rect rotaryRect_{};
+        int16_t rotaryStartX_ = 0;
+        int rotaryStartValue_ = 0;
         bool invalid_ = true;
         bool drew_ = false;
     };

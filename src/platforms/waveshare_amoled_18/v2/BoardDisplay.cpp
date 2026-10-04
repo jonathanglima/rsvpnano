@@ -16,6 +16,8 @@ namespace {
     Arduino_CO5300 gPanel(&gBus, WaveshareAmoled18::DisplayWiring::kResetPin, 0,
                           WaveshareAmoled18::DisplayWiring::kPanelWidth, WaveshareAmoled18::DisplayWiring::kPanelHeight,
                           WaveshareAmoled18::DisplayWiring::kPanelColumnOffset,
+                          WaveshareAmoled18::DisplayWiring::kPanelRowOffset,
+                          WaveshareAmoled18::DisplayWiring::kPanelColumnOffset,
                           WaveshareAmoled18::DisplayWiring::kPanelRowOffset);
 
 } // namespace
@@ -23,10 +25,10 @@ namespace {
 namespace Board::Display {
 
     bool begin() {
-        WaveshareAmoled18::DisplayPower::releaseHardware();
-        const bool ok = gPanel.begin();
+        if (!WaveshareAmoled18::DisplayPower::releaseHardware() || !gPanel.begin())
+            return false;
         gPanel.fillScreen(0x0000);
-        return ok;
+        return true;
     }
 
     Arduino_GFX& gfx() {

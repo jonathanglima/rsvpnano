@@ -21,6 +21,7 @@
 #include "focus/FocusSession.h"
 #include "focus/FocusTimers.h"
 #include "ui/Ui.h"
+#include "ui/Layouts.h"
 
 namespace screens {
 
@@ -32,9 +33,8 @@ namespace screens {
         ReadingSettings,
         InterfaceSettings,
         PacingSettings,
-        TypographySettings,
+        ReaderAppearance,
         BookFonts,
-        ReaderSettings,
         NetworkSettings,
         WifiScan,
         WifiConnect,
@@ -84,10 +84,8 @@ namespace screens {
         const locales::Catalog* languages_ = nullptr;
     };
     bool pacingSettings(ui::Context& ui, settings::PacingSettings& settings, Screen& screen);
-    bool typographySettings(ui::Context& ui, settings::TypographySettings& config, FontCatalog& fonts, Screen& screen);
     bool bookFonts(ui::Context& ui, const BookMetadata& metadata, settings::ReadingOverrides& overrides,
                    const locales::Catalog& localeCatalog, FontCatalog& fonts, Screen& screen);
-    bool readerSettings(ui::Context& ui, settings::ReadingSettings& settings, Screen& screen);
     class NetworkScreen {
     public:
         bool startupCheckPending = false;
@@ -120,6 +118,7 @@ namespace screens {
         };
 
         void saveNetwork(settings::SettingsStore& store, std::string_view ssid);
+        void updateWifiScan();
 
         std::array<WifiNetwork, 8> networks_;
         size_t networkCount_ = 0;
@@ -166,6 +165,8 @@ namespace screens {
         bool creating_ = false;
         bool deleteConfirm_ = false;
         bool writable_ = false;
+        size_t selectedIndex_ = 0;
+        ui::CarouselGesture carouselGesture_;
     };
     void status(ui::Context& ui, std::string_view title, std::string_view line1 = {}, std::string_view line2 = {},
                 int progress = -1);

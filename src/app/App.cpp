@@ -143,6 +143,7 @@ void App::update(uint32_t nowMs) {
     }
 
     if (companionApi_.active() || serialCompanion_.active()) {
+        companionApi_.renderStatus(serialCompanion_.active());
         settingsStore_.update(nowMs);
         Board::Power::updateBattery(battery_, nowMs);
         return;
@@ -171,7 +172,7 @@ void App::update(uint32_t nowMs) {
 
 void App::renderScreen(uint32_t nowMs) {
     if (serialCompanion_.active()) {
-        screens::status(immediateUi_, "USB companion", "Connected", "Keep the browser open");
+        companionApi_.renderStatus(true);
         return;
     }
     const screens::Screen renderedScreen = screen_;
@@ -231,10 +232,19 @@ void App::renderScreen(uint32_t nowMs) {
     case screens::Screen::ReadingSettings: {
         immediateUi_.beginFrame(static_cast<uint8_t>(screen_));
         const settings::ReadingMode mode = settingsStore_.settings().reading.mode;
+        const bool leftHanded = settingsStore_.settings().reading.leftHanded;
         if (screens::readingSettings(immediateUi_, settingsStore_.settings().reading, screen_)) {
             settingsStore_.acceptChanges();
             if (mode != settingsStore_.settings().reading.mode)
                 requestTypographyRefresh();
+            if (leftHanded != settingsStore_.settings().reading.leftHanded) {
+                immediateUi_.endFrame();
+                immediateUi_.setOrientation(settingsStore_.settings().reading.leftHanded
+                                                ? Board::Display::rotatedUiOrientation()
+                                                : Board::Display::defaultUiOrientation());
+                renderScreen(nowMs);
+                return;
+            }
         }
         break;
     }
@@ -257,12 +267,10 @@ void App::renderScreen(uint32_t nowMs) {
             settingsStore_.acceptChanges();
         break;
     }
-    case screens::Screen::TypographySettings: {
+    case screens::Screen::ReaderAppearance: {
         immediateUi_.beginFrame(static_cast<uint8_t>(screen_));
-        if (screens::typographySettings(immediateUi_, settingsStore_.settings().reading.typography, readerScreen_.fonts,
-                                        screen_)) {
+        if (readerScreen_.appearance(immediateUi_, screen_)) {
             settingsStore_.acceptChanges();
-            requestTypographyRefresh();
         }
         break;
     }
@@ -275,11 +283,6 @@ void App::renderScreen(uint32_t nowMs) {
         }
         break;
     }
-    case screens::Screen::ReaderSettings:
-        immediateUi_.beginFrame(static_cast<uint8_t>(screen_));
-        if (screens::readerSettings(immediateUi_, settingsStore_.settings().reading, screen_))
-            settingsStore_.acceptChanges();
-        break;
     case screens::Screen::NetworkSettings:
         immediateUi_.beginFrame(static_cast<uint8_t>(screen_));
         action = networkScreen_.draw(immediateUi_, settingsStore_, screen_);
@@ -480,8 +483,8 @@ void App::handleInput(Input::ActionMask actions, uint32_t nowMs) {
                     networkScreen_.closeWifi();
                 screen_ = screens::Screen::NetworkSettings;
             } else if (screen_ == screens::Screen::ReadingSettings || screen_ == screens::Screen::InterfaceSettings
-                       || screen_ == screens::Screen::PacingSettings || screen_ == screens::Screen::TypographySettings
-                       || screen_ == screens::Screen::ReaderSettings || screen_ == screens::Screen::NetworkSettings) {
+                       || screen_ == screens::Screen::PacingSettings || screen_ == screens::Screen::ReaderAppearance
+                       || screen_ == screens::Screen::NetworkSettings) {
                 screen_ = screens::Screen::Settings;
             } else if (screen_ == screens::Screen::BookFonts) {
                 screen_ = screens::Screen::Read;
@@ -885,6 +888,8 @@ void App::applySettings() {
 void App::loadAppearanceSettings() {
     auto& current = settingsStore_.settings();
     bool corrected = false;
+    immediateUi_.setOrientation(current.reading.leftHanded ? Board::Display::rotatedUiOrientation()
+                                                           : Board::Display::defaultUiOrientation());
     immediateUi_.setLanguageCatalog(storage_.mounted() ? &Board::Storage::filesystem() : nullptr, &localeCatalog_,
                                     &locales::loadUiFont);
     if (!readerScreen_.fonts.find(current.reading.typography.fontId)) {
@@ -1006,7 +1011,6 @@ void App::lightSleepFromStandby() {
     }
 
     const uint32_t wokeAtMs = millis();
-    Input::resume();
     exitStandby(wokeAtMs);
 
     if (wokeByTouch) {
@@ -1018,6 +1022,8 @@ void App::lightSleepFromStandby() {
                 break;
         }
     }
+    // The sampler reinitializes touch on resume; finish the wake-contact reads first.
+    Input::resume();
 }
 
 void App::powerOff(uint32_t nowMs) {

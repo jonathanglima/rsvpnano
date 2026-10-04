@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.ColorLens
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timer
@@ -56,6 +57,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -88,6 +92,7 @@ import com.rsvpnano.connection.NanoEndpoint
 import com.rsvpnano.models.RememberedNano
 import com.rsvpnano.presentation.CompanionPresenter
 import com.rsvpnano.presentation.CompanionUiState
+import com.rsvpnano.ui.AboutPage
 import com.rsvpnano.web.connection.BrowserSerial
 import com.rsvpnano.web.connection.requestUsbConnection
 import com.rsvpnano.web.connection.supportsWebSerial
@@ -141,6 +146,7 @@ internal enum class WebRoute(val hash: String, val label: String, val icon: Imag
     Settings("#/settings/reading", "Settings", Icons.Outlined.Settings),
     Feeds("#/feeds", "Feeds", Icons.Outlined.Link),
     Timers("#/timers", "Timers", Icons.Outlined.Timer),
+    About("#/about", "About", Icons.Outlined.Info),
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -235,6 +241,13 @@ private fun EditorialShell(
         onDispose { window.onhashchange = null }
     }
 
+    com.rsvpnano.ui.DeviceDeletionDialog(state.deletion, presenter::confirmDeviceDeletion, presenter::dismissDeviceDeletion)
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(state.notice) {
+        if (state.notice.showTransient)
+            snackbar.showSnackbar(state.notice.message, withDismissAction = true, duration = SnackbarDuration.Long)
+    }
+
     Column(Modifier.fillMaxSize()) {
         ConnectionToolbar(
             state = state,
@@ -276,6 +289,7 @@ private fun EditorialShell(
                     Workspace(route, routeHash, presenter, state, Modifier.weight(1f))
                 }
             }
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
         }
     }
 }
@@ -511,6 +525,7 @@ private fun Workspace(
                 WebRoute.Settings -> SettingsWorkspace(presenter, state, routeHash)
                 WebRoute.Feeds -> FeedsWorkspace(presenter, state)
                 WebRoute.Timers -> TimersWorkspace(presenter, state)
+                WebRoute.About -> AboutPage(Modifier.align(Alignment.CenterHorizontally))
             }
         }
     }
