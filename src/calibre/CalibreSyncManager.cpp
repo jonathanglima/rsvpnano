@@ -596,13 +596,16 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
           ? calibresync::DeletionPolicy::Mirror
           : calibresync::DeletionPolicy::Keep;
   const calibresync::SyncPlan plan =
-      calibresync::computeSyncPlan(remote, manifest, policy);
+      calibresync::computeSyncPlan(remote, manifest, policy, openBookPath_);
   result.unchanged = static_cast<int>(plan.unchanged.size());
-  Serial.printf("%s plan: %u download, %u move, %u delete, %u unchanged\n",
-                kLogTag, static_cast<unsigned>(plan.toDownload.size()),
-                static_cast<unsigned>(plan.toMove.size()),
-                static_cast<unsigned>(plan.toDelete.size()),
-                static_cast<unsigned>(plan.unchanged.size()));
+  result.deferred = static_cast<int>(plan.deferred.size());
+  Serial.printf(
+      "%s plan: %u download, %u move, %u delete, %u unchanged, %u deferred\n",
+      kLogTag, static_cast<unsigned>(plan.toDownload.size()),
+      static_cast<unsigned>(plan.toMove.size()),
+      static_cast<unsigned>(plan.toDelete.size()),
+      static_cast<unsigned>(plan.unchanged.size()),
+      static_cast<unsigned>(plan.deferred.size()));
 
   // Build the next manifest starting from entries we keep (unchanged + any
   // manifest entry that survives reconcile). We key by id so updates replace
@@ -620,8 +623,9 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
     return nullptr;
   };
 
-  // Seed with surviving manifest entries (unchanged, and -- under Keep --
-  // entries that left search scope but are not deleted).
+  // Seed with surviving manifest entries (unchanged, deferred because the book
+  // is open, and -- under Keep -- entries that left search scope but are not
+  // deleted).
   std::vector<int> deletedIds;
   deletedIds.reserve(plan.toDelete.size());
   for (const calibresync::DeleteAction &d : plan.toDelete) {
@@ -769,8 +773,9 @@ CalibreSyncManager::Result CalibreSyncManager::reconcile(
   result.ok = true;
   report("done", result.downloaded, result.downloaded, String());
   Serial.printf(
-      "%s done: %d downloaded, %d moved, %d deleted, %d unchanged, %d failed\n",
+      "%s done: %d downloaded, %d moved, %d deleted, %d unchanged, %d failed, "
+      "%d deferred\n",
       kLogTag, result.downloaded, result.moved, result.deleted, result.unchanged,
-                result.failed);
+      result.failed, result.deferred);
   return result;
 }

@@ -687,6 +687,7 @@ void App::runBackgroundJob() {
                                           : CalibreSettings::Mirror;
 
         CalibreSyncManager sync(&storage_);
+        sync.setOpenBookPath(jobCalibreOpenPath_.c_str());
         const CalibreSyncManager::Result result =
             sync.runSync(engineSettings, settingsStore_.settings().network.ssid.c_str(),
                          settingsStore_.secrets().wifiPassword.c_str());
@@ -694,7 +695,9 @@ void App::runBackgroundJob() {
             const std::string detail = std::to_string(result.downloaded) + " new, "
                                      + std::to_string(result.moved) + " moved, "
                                      + std::to_string(result.deleted) + " removed, "
-                                     + std::to_string(result.failed) + " failed";
+                                     + std::to_string(result.failed) + " failed"
+                                     + (result.deferred > 0 ? ", " + std::to_string(result.deferred) + " in use"
+                                                            : std::string{});
             copyText(complete.line1, "Calibre sync done");
             copyText(complete.line2, detail.c_str());
         } else {
@@ -802,6 +805,7 @@ void App::runRss() {
 
 void App::runCalibreSync() {
     ReadingLoop::pause(readerScreen_.session);
+    jobCalibreOpenPath_ = readerScreen_.session.sourcePath();
     screen_ = screens::Screen::Status;
     statusUntilMs_ = 0;
     screens::status(immediateUi_, "Calibre", "Syncing");

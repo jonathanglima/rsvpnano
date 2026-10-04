@@ -47,6 +47,8 @@ class CalibreSyncManager {
     int failed = 0;     // downloads and moves that errored (counted, sync
                         // continues; a failed move keeps the old path so the
                         // next run retries it)
+    int deferred = 0;   // actions skipped because they touch the open book;
+                        // the next run retries them
     String error;       // set when ok == false (a fatal, abort-the-run error)
   };
 
@@ -59,6 +61,10 @@ class CalibreSyncManager {
   void setProgressCallback(ProgressCallback callback) {
     progress_ = std::move(callback);
   }
+
+  // The book open in the reader (its .rsvp path), or empty. Actions that would
+  // delete, move or overwrite it are deferred -- see calibresync::SyncPlan.
+  void setOpenBookPath(const String &path) { openBookPath_ = path; }
 
   // Brings up station WiFi (net::connectStation, using settings.* and the
   // wifi creds), runs one full reconcile against the configured library, then
@@ -131,4 +137,5 @@ class CalibreSyncManager {
 
   StorageManager *storage_ = nullptr;
   ProgressCallback progress_;
+  String openBookPath_;
 };

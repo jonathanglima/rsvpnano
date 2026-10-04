@@ -8,6 +8,8 @@
 // delete), deleted-with-Keep (NOT deleted), empty remote, empty manifest, and
 // the folder-routing axis: retag-only moves, retag+edit downloads that report
 // the old path, and the unrouted caller that must keep the key-only behaviour.
+// Also the open-book guard: any action that would touch the book open in the
+// reader is deferred, never planned.
 
 #include <cstdio>
 #include <string>
@@ -351,6 +353,106 @@ void test_move_and_delete_coexist() {
   CHECK(!deleteHas(plan, 1));
 }
 
+bool deferredHas(const SyncPlan &plan, int id) {
+  for (const int d : plan.deferred) {
+    if (d == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void test_open_book_delete_is_deferred() {
+  std::printf("test_open_book_delete_is_deferred\n");
+  std::vector<RemoteEntry> r;
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp"),
+                               manifest(2, "200|t", "/library/books/B.rsvp")};
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(!deleteHas(plan, 1));
+  CHECK(deferredHas(plan, 1));
+  CHECK(deleteHas(plan, 2));
+  CHECK(plan.deferred.size() == 1);
+}
+
+void test_open_book_move_is_deferred() {
+  std::printf("test_open_book_move_is_deferred\n");
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/articles/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp")};
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(plan.toMove.empty());
+  CHECK(deferredHas(plan, 1));
+  CHECK(plan.unchanged.empty());
+}
+
+void test_open_book_redownload_is_deferred() {
+  std::printf("test_open_book_redownload_is_deferred\n");
+  std::vector<RemoteEntry> r{routed(1, "999|t", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp")};
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(!downloadHas(plan, 1));
+  CHECK(deferredHas(plan, 1));
+}
+
+void test_download_onto_open_path_is_deferred() {
+  std::printf("test_download_onto_open_path_is_deferred\n");
+  // A new book whose routed filename collides with the open one must not
+  // overwrite it while it is being read.
+  std::vector<RemoteEntry> r{routed(7, "100|t", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m;
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(plan.toDownload.empty());
+  CHECK(deferredHas(plan, 7));
+}
+
+void test_move_onto_open_path_is_deferred() {
+  std::printf("test_move_onto_open_path_is_deferred\n");
+  // Untagging an article routes it back to books/, where a book of the same
+  // name is open: renaming over it would replace the file being read.
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/articles/A.rsvp")};
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(plan.toMove.empty());
+  CHECK(deferredHas(plan, 1));
+}
+
+void test_open_book_retag_and_edit_is_deferred() {
+  std::printf("test_open_book_retag_and_edit_is_deferred\n");
+  // Download lands elsewhere, but its previousPath cleanup would remove the
+  // open file.
+  std::vector<RemoteEntry> r{routed(1, "999|t", "/library/articles/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp")};
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(!downloadHas(plan, 1));
+  CHECK(deferredHas(plan, 1));
+}
+
+void test_unchanged_open_book_is_not_deferred() {
+  std::printf("test_unchanged_open_book_is_not_deferred\n");
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/books/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp")};
+  const SyncPlan plan =
+      computeSyncPlan(r, m, DeletionPolicy::Mirror, "/library/books/A.rsvp");
+  CHECK(plan.deferred.empty());
+  CHECK(plan.unchanged.size() == 1);
+}
+
+void test_no_open_book_defers_nothing() {
+  std::printf("test_no_open_book_defers_nothing\n");
+  std::vector<RemoteEntry> r{routed(1, "100|t", "/library/articles/A.rsvp", "A")};
+  std::vector<ManifestEntry> m{manifest(1, "100|t", "/library/books/A.rsvp"),
+                               manifest(2, "200|t", "/library/books/B.rsvp")};
+  const SyncPlan plan = computeSyncPlan(r, m, DeletionPolicy::Mirror);
+  CHECK(plan.deferred.empty());
+  CHECK(plan.toMove.size() == 1);
+  CHECK(plan.toDelete.size() == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -370,6 +472,14 @@ int main() {
   test_unrouted_caller_ignores_path_axis();
   test_move_back_from_articles_to_books();
   test_move_and_delete_coexist();
+  test_open_book_delete_is_deferred();
+  test_open_book_move_is_deferred();
+  test_open_book_redownload_is_deferred();
+  test_download_onto_open_path_is_deferred();
+  test_move_onto_open_path_is_deferred();
+  test_open_book_retag_and_edit_is_deferred();
+  test_unchanged_open_book_is_not_deferred();
+  test_no_open_book_defers_nothing();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   if (g_failures == 0) {

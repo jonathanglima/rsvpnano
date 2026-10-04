@@ -191,7 +191,7 @@ the `password` field.
 2. **Resolve library** — `GET /ajax/library-info` to confirm or discover `library_id`.
 3. **Search** — `GET /ajax/search?query=<searchQuery>&library_id=<lib>` → `book_ids[]`.
 4. **Resolve each book** — `GET /ajax/book/<id>?library_id=<lib>` → `RsvpRef` (url, size, mtime).
-5. **Compute sync plan** — `calibresync::computeSyncPlan(remote, manifest, policy)` (pure, no I/O).
+5. **Compute sync plan** — `calibresync::computeSyncPlan(remote, manifest, policy, openPath)` (pure, no I/O). `openPath` is the book open in the reader, captured on the main task before the job starts.
 6. **Download** new and changed files to `<routed folder>/<sanitized-title>.rsvp` via streaming `net::get` (write to `.tmp`, then rename). The folder comes from `CalibreSyncManager::targetDirectoryFor()` — `/library/articles` for a book tagged `article`, `/library/books` otherwise.
 7. **Move** books whose bytes are unchanged but whose folder changed (a retag), renaming the `.rsvp` and its sidecars. No network.
 8. **Delete** removed books from SD, sidecars included (Mirror policy only).
@@ -316,6 +316,7 @@ against the routed destination to detect a retag.
 | Book in both, keys equal, same folder | Skip (unchanged) |
 | Book in manifest, not in remote, policy = `Mirror` | Delete from SD |
 | Book in manifest, not in remote, policy = `Keep` | Leave on SD |
+| Any of the above would delete, move or overwrite the open book | Defer to the next sync |
 
 The folder axis is only consulted when the caller fills `RemoteEntry::path`. An empty
 path means "this caller does no routing" and the diff collapses to the original key-only
@@ -328,6 +329,16 @@ data the device already has, and — because reading progress and the prebuilt i
 sidecars keyed by *document path* — a naive rename of just the `.rsvp` would silently
 reset the reader to word zero and force a reindex. `moveBookFiles()` carries
 `.rstate.toml`, `.ridx` and `.rdat` along.
+
+**The open book is never touched.** The reader holds the open book's `.rsvp` and index
+sidecars open, so pulling them out from under it mid-read would break the session. This
+is the same rule the companion API applies (`resource_in_use`) before it removes an open
+book. A sync cannot close the book itself, because it runs on a background task and the
+reader belongs to the main one. So any action that touches the open path goes to
+`SyncPlan::deferred` instead: its manifest entry is kept unchanged, the completion status
+reports it as "in use", and the next sync after the book is closed carries it out. The path
+is captured before the job starts. Opening a book is a background job too, and only one runs
+at a time, so the open book cannot change during a sync.
 
 ### Deletion policy
 

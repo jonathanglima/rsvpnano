@@ -93,6 +93,10 @@ struct SyncPlan {
   std::vector<MoveAction> toMove;
   std::vector<DeleteAction> toDelete;
   std::vector<int> unchanged;  // ids whose key matched the manifest
+  // ids whose action would touch the book open in the reader. Nothing is done
+  // for them this run; their manifest entries survive untouched, so the next
+  // sync recomputes the same action once the book is closed.
+  std::vector<int> deferred;
 };
 
 // Finds a manifest entry by id. Returns nullptr when absent.
@@ -124,6 +128,12 @@ inline bool remoteHasId(const std::vector<RemoteEntry> &remote, int id) {
 //   * id in both, keys equal, same path                 -> unchanged
 //   * id in manifest, not in remote, policy == Mirror   -> toDelete
 //   * id in manifest, not in remote, policy == Keep     -> (left alone)
+//   * any of the above touching openPath                -> deferred
+//
+// openPath is the book currently open in the reader (empty when none). Its
+// .rsvp and index sidecars are held open, so deleting, moving or overwriting
+// it mid-read is deferred to a later sync -- the same "in use" rule the
+// companion API applies before it removes an open book.
 //
 // The path axis is only consulted when the caller populated RemoteEntry::path.
 // An empty path means "caller does no folder routing", and the diff collapses
@@ -132,8 +142,12 @@ inline bool remoteHasId(const std::vector<RemoteEntry> &remote, int id) {
 // No I/O, no clock, no allocation beyond the output vectors.
 inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
                                 const std::vector<ManifestEntry> &manifest,
-                                DeletionPolicy policy) {
+                                DeletionPolicy policy,
+                                const String &openPath = String()) {
   SyncPlan plan;
+  const auto isOpen = [&openPath](const String &path) {
+    return !openPath.isEmpty() && path == openPath;
+  };
 
   // Pass 1: walk the remote view, deciding download vs move vs unchanged.
   for (const RemoteEntry &r : remote) {
@@ -143,11 +157,18 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
     const bool routed = !r.path.isEmpty();
     const bool relocated = routed && existing != nullptr && existing->path != r.path;
 
+    if (existing != nullptr && existing->key == r.key && !relocated) {
+      plan.unchanged.push_back(r.id);
+      continue;
+    }
+    // Every remaining case writes r.path and/or vacates existing->path.
+    if (isOpen(r.path) || (existing != nullptr && isOpen(existing->path))) {
+      plan.deferred.push_back(r.id);
+      continue;
+    }
+
     if (existing != nullptr && existing->key == r.key) {
-      if (!relocated) {
-        plan.unchanged.push_back(r.id);
-        continue;
-      }
+      // Same bytes, different folder: the retag move.
       MoveAction move;
       move.id = r.id;
       move.key = r.key;
@@ -176,6 +197,10 @@ inline SyncPlan computeSyncPlan(const std::vector<RemoteEntry> &remote,
   if (policy == DeletionPolicy::Mirror) {
     for (const ManifestEntry &m : manifest) {
       if (!remoteHasId(remote, m.id)) {
+        if (isOpen(m.path)) {
+          plan.deferred.push_back(m.id);
+          continue;
+        }
         DeleteAction action;
         action.id = m.id;
         action.path = m.path;
