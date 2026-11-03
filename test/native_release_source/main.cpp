@@ -4,7 +4,7 @@
 int main() {
     settings::UpdateSettings settings;
     auto source=update::releaseSourceForSettings(settings);
-    assert(source.owner=="ionutdecebal" && source.repo=="rsvpnano");
+    assert(source.owner=="jonathanglima" && source.repo=="rsvpnano");
     assert(source.tag==update::kDefaultUiReleaseTag);
     settings.releaseTag=" preview-ui-next ";
     source=update::releaseSourceForSettings(settings);
