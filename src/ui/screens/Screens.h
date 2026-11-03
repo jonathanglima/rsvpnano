@@ -1,4 +1,5 @@
 #pragma once
+#include "update/UpdateOffer.h"
 
 #include <Arduino.h>
 #include <FS.h>
@@ -66,6 +67,7 @@ namespace screens {
         EnableStorageEncryption,
         OtaCheck,
         OtaInstall,
+        OtaSwitchCheck,
     };
 
     Action read(ui::Context& ui, std::string_view title, std::string_view author, uint8_t progress, Screen& screen);
@@ -133,7 +135,7 @@ namespace screens {
     Action device(ui::Context& ui, bool storageReady, size_t bookCount, settings::NvsEncryptionState encryptionState,
                   Screen& screen);
     Action storageEncryption(ui::Context& ui, settings::NvsEncryptionState encryptionState, Screen& screen);
-    Action ota(ui::Context& ui, std::string_view firmwareVersion, Screen& screen);
+    Action ota(ui::Context& ui, std::string_view firmwareVersion, Screen& screen, const OtaUpdater::Offer* offer = nullptr);
     class FocusScreen {
     public:
         void begin();

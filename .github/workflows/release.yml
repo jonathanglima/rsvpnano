@@ -3,12 +3,17 @@ name: Release firmware
 on:
   push:
     tags:
-      - "v*"
+      - "v0.0.*"
+      - "v0.1.*"
   workflow_dispatch:
     inputs:
       version:
         description: "Release tag, for example v0.0.9"
         required: true
+      draft:
+        description: "Upload a draft release for verification before publication"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,7 +39,7 @@ jobs:
           else
             RELEASE_TAG="$GITHUB_REF_NAME"
           fi
-          if ! echo "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$'; then
+          if ! echo "$RELEASE_TAG" | grep -Eq '^v0\.[01]\.[0-9]+$'; then
             echo "::error::Invalid release version: ${RELEASE_TAG}"
             exit 1
           fi
@@ -85,23 +90,50 @@ jobs:
           fi
           cp "$NOTES_PATH" release-notes.md
 
+      - name: Prepare update catalog descriptor and checksums
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          BUILD_SHA: ${{ needs.prepare.outputs.commit_sha }}
+        run: |
+          if [ -f src/update/SwitchSettings.cpp ]; then
+            python3 tools/make_update_descriptor.py \
+              --image build/firmware/rsvp-nano-esp32-s3-touch-lcd-3.49-ota.bin \
+              --board lcd349-v1 \
+              --image build/firmware/rsvp-nano-esp32-s3-touch-lcd-3.49-rev2-ota.bin \
+              --board lcd349-v2 \
+              --channel classic --tag "$RELEASE_TAG" --commit "$BUILD_SHA" \
+              --output build/firmware/update-channel.json
+          fi
+          python3 tools/package_release.py
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           BUILD_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          CREATE_DRAFT: ${{ inputs.draft || false }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            git fetch --tags origin
-            git tag -f "$RELEASE_TAG" "$BUILD_SHA"
-            git push origin "refs/tags/${RELEASE_TAG}" --force
+          # Published tags and assets are immutable. Reuse never deletes a release.
+          git fetch --tags origin
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$BUILD_SHA"
+          else
+            git tag "$RELEASE_TAG" "$BUILD_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
           fi
-
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release delete "$RELEASE_TAG" --yes
+            echo 'Release already exists; refusing to overwrite'; exit 1
           fi
-
-          gh release create "$RELEASE_TAG" build/firmware/*.bin \
-            --title "$RELEASE_TAG" \
-            --notes-file release-notes.md \
-            --target "$BUILD_SHA"
+          python3 tools/package_release.py --print-assets > build/publish-assets.txt
+          mapfile -t assets < build/publish-assets.txt
+          test "${#assets[@]}" -gt 0
+          gh release create "$RELEASE_TAG" "${assets[@]}" --draft --latest=false \
+            --verify-tag --title "$RELEASE_TAG" \
+            --notes-file release-notes.md --target "$BUILD_SHA"
+          # Drafts are addressed by release ID; the by-tag endpoint is public-only.
+          release_api_url="$(gh release view "$RELEASE_TAG" --json apiUrl --jq .apiUrl)"
+          gh api "$release_api_url" > build/release-response.json
+          python3 tools/check_legacy_ota_metadata.py build/release-response.json
+          if [ "$CREATE_DRAFT" != "true" ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi
