@@ -34,3 +34,10 @@ compile_commands.json
 src/idf_component.yml
 benchmark/logs/
 benchmark/summary.md
+
+# calibre host test artifacts
+test/calibre/vendor/
+test/calibre/build/
+
+# oh-my-claudecode local agent state
+.omc/

@@ -82,6 +82,7 @@ namespace screens {
         PowerOff,
         CompanionSync,
         RssRefresh,
+        CalibreSync,
         UsbTransfer,
         StorageStatus,
         EnableStorageEncryption,

@@ -51,6 +51,7 @@ private:
         OnlineDictionary,
         BookSettings,
         DictionaryInstall,
+        CalibreSync,
     };
 
     struct JobUpdate {
@@ -69,6 +70,9 @@ private:
     void handleInput(Input::ActionMask actions, uint32_t nowMs);
     void handleTouch(uint32_t nowMs);
     void runRss();
+    // Manual "Sync from Calibre" action: pulls .rsvp books matching the
+    // configured search from the calibre-server on the LAN.
+    void runCalibreSync();
     void runBookOpen(size_t index, uint32_t nowMs);
     bool requestTypographyRefresh();
     void updateBackgroundJob();
@@ -130,6 +134,9 @@ private:
     JobKind jobKind_ = JobKind::None;
     size_t jobBookIndex_ = 0;
     bool jobBookLoaded_ = false;
+    // Snapshot of the open book taken on the main task before a Calibre sync;
+    // book opens are jobs too, so it cannot change while the sync runs.
+    std::string jobCalibreOpenPath_;
     size_t pendingBookIndex_ = 0;
     bool bookOpenPending_ = false;
     bool typographyRefreshPending_ = false;

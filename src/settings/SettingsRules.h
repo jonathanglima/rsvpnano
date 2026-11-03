@@ -68,6 +68,11 @@ namespace settings::rules {
     inline constexpr size_t kWifiSsidMaxLength = 32;
     inline constexpr size_t kWifiPasswordMaxLength = 64;
     inline constexpr size_t kRepositoryOwnerMaxLength = 64;
+    inline constexpr size_t kCalibreBaseUrlMaxLength = 200;
+    inline constexpr size_t kCalibreLibraryIdMaxLength = 64;
+    inline constexpr size_t kCalibreSearchQueryMaxLength = 200;
+    inline constexpr size_t kCalibreUsernameMaxLength = 64;
+    inline constexpr size_t kCalibrePasswordMaxLength = 64;
     inline constexpr size_t kReleaseTagMaxLength = 64;
     inline constexpr size_t kThemeNameMaxLength = 64;
 

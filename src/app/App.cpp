@@ -15,6 +15,7 @@
 #include "board/BoardSystem.h"
 #include "freertos/task.h"
 #include "logging/Logger.h"
+#include "calibre/CalibreSyncManager.h"
 #include "feeds/RssFeeds.h"
 #include "settings/NvsSecurity.h"
 #include "library/ReadingProgress.h"
@@ -642,6 +643,9 @@ void App::handleScreenAction(screens::Action action, uint32_t nowMs) {
         companionApi_.begin();
         renderScreen(nowMs);
         return;
+    case screens::Action::CalibreSync:
+        runCalibreSync();
+        return;
     case screens::Action::RssRefresh:
         runRss();
         return;
@@ -987,6 +991,13 @@ void App::updateBackgroundJob() {
             showTransientStatus("RSS", update.line1, update.line2, 1400, screens::Screen::Reader);
             return;
         }
+        if (completed == JobKind::CalibreSync) {
+            // The library cache only rebuilds when the book count changes, so a
+            // retag move (same count, new path) would otherwise leave stale entries.
+            libraryScreen_.invalidate();
+            showTransientStatus("Calibre", update.line1, update.line2, 1800, screens::Screen::Device);
+            return;
+        }
         if (completed == JobKind::StorageCheck) {
             showTransientStatus(immediateUi_.text(UiText::Storage), update.line1, update.line2, 1800,
                                 screens::Screen::Device);
@@ -1068,6 +1079,43 @@ void App::runBackgroundJob() {
         storage_.refreshBooks();
         copyText(complete.line1, result.summary.c_str());
         copyText(complete.line2, result.detail.c_str());
+        break;
+    }
+    case JobKind::CalibreSync: {
+        Logger::checkpoint("calibre_sync");
+        // Bridge the stored settings into the engine's Arduino-String struct.
+        // The engine deliberately does not depend on settings/SettingsModel.h so
+        // its reconcile core stays host-testable (see calibre/CalibreSettings.h).
+        const settings::CalibreSettings& stored = settingsStore_.settings().calibre;
+        CalibreSettings engineSettings;
+        engineSettings.enabled = stored.enabled;
+        engineSettings.baseUrl = stored.baseUrl.c_str();
+        engineSettings.libraryId = stored.libraryId.c_str();
+        engineSettings.searchQuery = stored.searchQuery.c_str();
+        engineSettings.username = stored.username.c_str();
+        engineSettings.password = settingsStore_.secrets().calibrePassword.c_str();
+        engineSettings.deletionPolicy = stored.deletionPolicy == settings::CalibreDeletionPolicy::keep
+                                          ? CalibreSettings::Keep
+                                          : CalibreSettings::Mirror;
+
+        CalibreSyncManager sync(&storage_);
+        sync.setOpenBookPath(jobCalibreOpenPath_.c_str());
+        const CalibreSyncManager::Result result =
+            sync.runSync(engineSettings, settingsStore_.settings().network.ssid.c_str(),
+                         settingsStore_.secrets().wifiPassword.c_str());
+        if (result.ok) {
+            const std::string detail = std::to_string(result.downloaded) + " new, "
+                                     + std::to_string(result.moved) + " moved, "
+                                     + std::to_string(result.deleted) + " removed, "
+                                     + std::to_string(result.failed) + " failed"
+                                     + (result.deferred > 0 ? ", " + std::to_string(result.deferred) + " in use"
+                                                            : std::string{});
+            copyText(complete.line1, "Calibre sync done");
+            copyText(complete.line2, detail.c_str());
+        } else {
+            copyText(complete.line1, "Calibre sync failed");
+            copyText(complete.line2, result.error.c_str());
+        }
         break;
     }
     case JobKind::StorageCheck: {
@@ -1187,6 +1235,17 @@ void App::runRss() {
     screens::status(immediateUi_, "RSS", immediateUi_.text(UiText::CheckingFeeds));
     if (!startBackgroundJob(JobKind::Rss))
         showTransientStatus("RSS", immediateUi_.text(UiText::CouldNotStart), {}, 1200, screens::Screen::Reader);
+}
+
+void App::runCalibreSync() {
+    ReadingLoop::pause(readerScreen_.session);
+    jobCalibreOpenPath_ = readerScreen_.session.sourcePath();
+    screen_ = screens::Screen::Status;
+    statusUntilMs_ = 0;
+    screens::status(immediateUi_, "Calibre", "Syncing");
+    if (!startBackgroundJob(JobKind::CalibreSync))
+        showTransientStatus("Calibre", immediateUi_.text(UiText::CouldNotStart), {}, 1200,
+                            screens::Screen::Reader);
 }
 
 void App::runBookOpen(size_t index, uint32_t nowMs) {

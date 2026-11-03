@@ -13,7 +13,9 @@
 namespace settings {
 
     inline constexpr std::string_view kMathFontTarget = "math";
-    inline constexpr std::string_view kDefaultRepositoryOwner = "ionutdecebal";
+    // This fork publishes its own OTA releases (upstream + the Calibre patch),
+    // so updates default to it rather than to upstream.
+    inline constexpr std::string_view kDefaultRepositoryOwner = "jonathanglima";
 
     enum class ReadingMode : uint8_t {
         rsvp,
@@ -151,11 +153,34 @@ namespace settings {
         bool operator==(const UpdateSettings&) const = default;
     };
 
+    // What to do with books already on the SD card that no longer match the
+    // Calibre search: mirror the server exactly, or keep local copies forever.
+    enum class CalibreDeletionPolicy : uint8_t {
+        mirror,
+        keep,
+    };
+
+    struct CalibreSettings {
+        bool enabled = false;
+        // Base URL of the calibre-server, without a trailing slash.
+        std::string baseUrl;
+        // Empty means "use whatever the server reports as default_library".
+        std::string libraryId;
+        std::string searchQuery = "tag:rsvp";
+        // Optional HTTP Basic user; the matching password lives in DeviceSecrets
+        // so it follows the same encrypted-NVS path as the Wi-Fi password.
+        std::string username;
+        CalibreDeletionPolicy deletionPolicy = CalibreDeletionPolicy::mirror;
+
+        bool operator==(const CalibreSettings&) const = default;
+    };
+
     struct DeviceSettings {
         ReadingSettings reading;
         InterfaceSettings interface;
         NetworkSettings network;
         UpdateSettings updates;
+        CalibreSettings calibre;
 
         bool operator==(const DeviceSettings&) const = default;
     };
@@ -171,6 +196,7 @@ namespace settings {
         // live only in the secrets store, never in SD settings or the public API.
         std::string wifiPassword;
         std::vector<WifiProfile> wifiNetworks;
+        std::string calibrePassword;
 
         bool operator==(const DeviceSecrets&) const = default;
     };

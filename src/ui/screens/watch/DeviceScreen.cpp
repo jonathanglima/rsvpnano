@@ -12,16 +12,18 @@ namespace screens {
                   Screen& screen) {
         detail::navigation(ui, Screen::Device, screen);
         const auto area = detail::tabContent(ui);
-        const auto grid = ui.pagedGrid(area, 7, 2, 56);
+        const auto grid = ui.pagedGrid(area, 8, 2, 56);
         if (ui.card(grid.item(0), ui.text(UiText::UsbTransfer), {}, watch::textSize(ui)))
             return Action::UsbTransfer;
         if (ui.card(grid.item(1), ui.text(UiText::CompanionSync), {}, watch::textSize(ui)))
             return Action::CompanionSync;
         if (ui.card(grid.item(2), ui.text(UiText::RefreshRss), {}, watch::textSize(ui)))
             return Action::RssRefresh;
-        if (ui.card(grid.item(3), ui.text(UiText::OtaUpdate), {}, watch::textSize(ui)))
+        if (ui.card(grid.item(3), ui.text(UiText::SyncCalibre), {}, watch::textSize(ui)))
+            return Action::CalibreSync;
+        if (ui.card(grid.item(4), ui.text(UiText::OtaUpdate), {}, watch::textSize(ui)))
             screen = Screen::Ota;
-        if (ui.card(grid.item(4), ui.text(UiText::Storage),
+        if (ui.card(grid.item(5), ui.text(UiText::Storage),
                     storageReady ? std::to_string(bookCount) + " " + std::string{ui.text(UiText::Items)}
                                  : std::string{ui.text(UiText::Unavailable)},
                     watch::textSize(ui)))
@@ -30,14 +32,14 @@ namespace screens {
                                     : storageReady && encryptionState == settings::NvsEncryptionState::Available
                                         ? UiText::Off
                                         : UiText::Unavailable;
-        if (ui.card(grid.item(5), ui.text(UiText::Encryption), ui.text(encryptionStatus), watch::textSize(ui))
+        if (ui.card(grid.item(6), ui.text(UiText::Encryption), ui.text(encryptionStatus), watch::textSize(ui))
             && storageReady && encryptionState == settings::NvsEncryptionState::Available) {
             explanation = 0;
             explanationOffset = 0;
             acknowledged = false;
             screen = Screen::StorageEncryption;
         }
-        if (ui.card(grid.item(6), ui.text(UiText::PowerOff), {}, watch::textSize(ui), ui::themes::Accent,
+        if (ui.card(grid.item(7), ui.text(UiText::PowerOff), {}, watch::textSize(ui), ui::themes::Accent,
                     ui::Icon::Power))
             return Action::PowerOff;
         return Action::None;

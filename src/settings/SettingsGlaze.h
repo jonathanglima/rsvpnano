@@ -54,6 +54,12 @@ struct glz::meta<settings::ReadingPacing> {
 };
 
 template<>
+struct glz::meta<settings::CalibreDeletionPolicy> {
+    using enum settings::CalibreDeletionPolicy;
+    static constexpr auto value = glz::enumerate(mirror, keep);
+};
+
+template<>
 struct glz::meta<standby::Kind> {
     using enum standby::Kind;
     static constexpr auto value = glz::enumerate(life, maze, voronoi, screenOff, reaction);

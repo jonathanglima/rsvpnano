@@ -125,6 +125,8 @@ CompanionApi::OperationResult CompanionApi::startServer() {
         makeRoute("/api/v2/network", HTTP_DELETE, &CompanionApi::handle<&CompanionApi::deleteNetwork>),
         makeRoute("/api/v2/feeds", HTTP_GET, &CompanionApi::handle<&CompanionApi::getFeeds>),
         makeRoute("/api/v2/feeds", HTTP_PUT, &CompanionApi::handle<&CompanionApi::putFeeds>),
+        makeRoute("/api/v2/calibre", HTTP_GET, &CompanionApi::handle<&CompanionApi::getCalibre>),
+        makeRoute("/api/v2/calibre", HTTP_PUT, &CompanionApi::handle<&CompanionApi::putCalibre>),
         makeRoute("/api/v2/focus-timers", HTTP_GET, &CompanionApi::handle<&CompanionApi::getFocusTimers>),
         makeRoute("/api/v2/focus-timers", HTTP_PUT, &CompanionApi::handle<&CompanionApi::putFocusTimers>),
         makeRoute("/api/v2/*", HTTP_OPTIONS, &CompanionApi::handleOptions),

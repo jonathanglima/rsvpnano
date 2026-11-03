@@ -52,6 +52,32 @@ namespace companion::api {
         std::optional<std::string> password;
     };
 
+    // PATCH-style payload: every field is optional and an absent field leaves the
+    // stored value alone. `password` additionally treats an empty string as "no
+    // change", because getCalibre never echoes the stored password back — so a
+    // client round-tripping the GET response must not wipe the credential.
+    struct CalibreUpdate {
+        std::optional<bool> enabled;
+        std::optional<std::string> baseUrl;
+        std::optional<std::string> libraryId;
+        std::optional<std::string> searchQuery;
+        std::optional<std::string> username;
+        std::optional<std::string> password;
+        std::optional<settings::CalibreDeletionPolicy> deletionPolicy;
+    };
+
+    // What getCalibre returns. Mirrors settings::CalibreSettings but carries an
+    // always-empty `password` so the shape stays symmetric with CalibreUpdate.
+    struct CalibreView {
+        bool enabled = false;
+        std::string baseUrl;
+        std::string libraryId;
+        std::string searchQuery;
+        std::string username;
+        std::string password;
+        settings::CalibreDeletionPolicy deletionPolicy = settings::CalibreDeletionPolicy::mirror;
+    };
+
     struct AppearanceSelection {
         std::string id;
     };
