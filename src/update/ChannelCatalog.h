@@ -6,8 +6,8 @@
 #include <vector>
 
 namespace update {
-inline constexpr char kCatalogUrl[] = "https://ionutdecebal.github.io/rsvpnano/firmware/channels.json";
-inline constexpr char kOfficialRepo[] = "ionutdecebal/rsvpnano";
+inline constexpr char kCatalogUrl[] = "https://jonathanglima.github.io/rsvpnano/firmware/channels.json";
+inline constexpr char kOfficialRepo[] = "jonathanglima/rsvpnano";
 inline constexpr char kNewUiBoard[] = "waveshare_esp32s3_touch_lcd_3_49";
 inline constexpr char kNewUiRev2Board[] = "waveshare_esp32s3_touch_lcd_3_49_rev2";
 constexpr bool supportsNewUi(std::string_view board) {

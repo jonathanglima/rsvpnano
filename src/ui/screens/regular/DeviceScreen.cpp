@@ -57,7 +57,9 @@ namespace screens {
             }
             ui.label({16, 56, 330, 34}, storageStatus, 26);
             ui.label({16, 94, 330, 27}, storageReady ? "Your library, ready to read." : ui.text(UiText::CheckSdCard), 13, ui::themes::Muted);
-            if (button(ui, {16, 128, 330, 36}, ui.text(UiText::RefreshRss), Style::Accent)) return Action::RssRefresh;
+            if (button(ui, {16, 128, 130, 36}, ui.text(UiText::RefreshRss), Style::Accent, true, {}, 13)) return Action::RssRefresh;
+            if (button(ui, {156, 128, 190, 36}, ui.text(UiText::SyncCalibre), Style::Accent, true, {}, 13))
+                return Action::CalibreSync;
             if (button(ui, {374, 52, 250, 34}, "Check storage")) return Action::StorageStatus;
             const ui::Rect encryption{374, 91, 250, 34};
             const bool editEncryption = button(ui, encryption, ui.text(UiText::Encryption), Style::Secondary,
