@@ -1,6 +1,6 @@
 name: Mirror upstream releases (with Calibre patch)
 
-# Every day (and on manual trigger), check whether upstream cut a new release.
+# On manual trigger, check whether upstream cut a new release.
 # If so, merge that tag into the `calibre` patch branch and, when it merges
 # cleanly, build + publish a matching "<tag>-calibre" release with the OTA
 # asset. If the merge conflicts, open an issue and stop (resolve it by hand,
@@ -10,9 +10,9 @@ name: Mirror upstream releases (with Calibre patch)
 # lives on `main` even though it builds the `calibre` branch.
 
 on:
-  schedule:
-    - cron: '17 4 * * *'   # daily, 04:17 UTC
-  workflow_dispatch: {}    # allow a manual run any time
+  # The daily schedule is paused: once the upstream tag is on `calibre`, a run
+  # would publish a single-board release without review.
+  workflow_dispatch: {}    # manual runs only
 
 permissions:
   contents: write   # push the patch branch + create releases
