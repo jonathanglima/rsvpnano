@@ -16,6 +16,7 @@ on:
         default: false
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -39,8 +40,12 @@ jobs:
           else
             RELEASE_TAG="$GITHUB_REF_NAME"
           fi
-          if ! echo "$RELEASE_TAG" | grep -Eq '^v0\.[01]\.[0-9]+(-calibre(\.[0-9]+)?)?$'; then
+          if ! echo "$RELEASE_TAG" | grep -Eq '^v0\.[01]\.[0-9]+-calibre(\.[0-9]+)?$'; then
             echo "::error::Invalid release version: ${RELEASE_TAG}"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/calibre; then
+            echo "::error::${RELEASE_TAG} is not on the calibre branch."
             exit 1
           fi
 
@@ -136,4 +141,6 @@ jobs:
           python3 tools/check_legacy_ota_metadata.py build/release-response.json
           if [ "$CREATE_DRAFT" != "true" ]; then
             gh release edit "$RELEASE_TAG" --draft=false --latest
+            # LCD 3.49 boards find updates only through the Pages catalog.
+            gh workflow run pages.yml --ref main
           fi
