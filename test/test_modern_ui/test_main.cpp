@@ -231,7 +231,8 @@ void test_settings_and_connections_keep_existing_actions() {
     f.frame(connections);
     TEST_ASSERT_EQUAL(static_cast<int>(screens::Action::CompanionSync), static_cast<int>(f.tap(connections, 520, 75)));
     TEST_ASSERT_EQUAL(static_cast<int>(screens::Action::UsbTransfer), static_cast<int>(f.tap(connections, 130, 138)));
-    TEST_ASSERT_EQUAL(static_cast<int>(screens::Action::RssRefresh), static_cast<int>(f.tap(connections, 520, 138)));
+    TEST_ASSERT_EQUAL(static_cast<int>(screens::Action::RssRefresh), static_cast<int>(f.tap(connections, 320, 138)));
+    TEST_ASSERT_EQUAL(static_cast<int>(screens::Action::CalibreSync), static_cast<int>(f.tap(connections, 520, 138)));
     f.screen = screens::Screen::Device;
     auto device = [&] { return screens::device(f.ui, true, 5, settings::NvsEncryptionState::Available, f.screen); };
     f.frame(device);

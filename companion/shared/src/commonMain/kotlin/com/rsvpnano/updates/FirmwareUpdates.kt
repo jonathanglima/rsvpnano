@@ -72,7 +72,7 @@ internal data class FirmwareReleaseSource(
     val tag: String,
 )
 
-internal const val DefaultFirmwareRepositoryOwner = "ionutdecebal"
+internal const val DefaultFirmwareRepositoryOwner = "jonathanglima"
 
 internal fun FirmwareReleaseSource.catalogContentUrl(path: String): String =
     "https://raw.githubusercontent.com/$owner/$repository/${tag.ifBlank { "main" }}/$path"

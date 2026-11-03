@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "logging/Logger.h"
 #include "calibre/CalibreSyncManager.h"
+#include "network/WifiConnection.h"
 #include "feeds/RssFeeds.h"
 #include "settings/NvsSecurity.h"
 #include "library/ReadingProgress.h"
@@ -1100,9 +1101,14 @@ void App::runBackgroundJob() {
 
         CalibreSyncManager sync(&storage_);
         sync.setOpenBookPath(jobCalibreOpenPath_.c_str());
-        const CalibreSyncManager::Result result =
-            sync.runSync(engineSettings, settingsStore_.settings().network.ssid.c_str(),
-                         settingsStore_.secrets().wifiPassword.c_str());
+        CalibreSyncManager::Result result;
+        if (auto connected = net::connectSaved(settingsStore_.settings().network, settingsStore_.secrets()); connected) {
+            result = sync.reconcile(engineSettings);
+            net::disconnect();
+        } else {
+            net::disconnect();
+            result.error = "WiFi connect failed";
+        }
         if (result.ok) {
             const std::string detail = std::to_string(result.downloaded) + " new, "
                                      + std::to_string(result.moved) + " moved, "

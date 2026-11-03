@@ -99,8 +99,9 @@ namespace screens::modern {
         } else if (current == Screen::Connections) {
             if (button(ui, {12, 51, 300, 52}, "Wi-Fi & identity", Style::Secondary, true, "Networks & device name",13)) screen = Screen::NetworkSettings;
             if (button(ui, {328, 51, 300, 52}, ui.text(UiText::CompanionSync), Style::Secondary, true, "Local companion",13)) return Action::CompanionSync;
-            if (button(ui, {12, 111, 300, 53}, ui.text(UiText::UsbTransfer), Style::Secondary, true, "Transfer with a cable",13)) return Action::UsbTransfer;
-            if (button(ui, {328, 111, 300, 53}, ui.text(UiText::RefreshRss), Style::Secondary, true, "Refresh saved feeds",13)) return Action::RssRefresh;
+            if (button(ui, {12, 111, 198, 53}, ui.text(UiText::UsbTransfer), Style::Secondary, true, "Transfer with a cable",13)) return Action::UsbTransfer;
+            if (button(ui, {220, 111, 198, 53}, ui.text(UiText::RefreshRss), Style::Secondary, true, "Refresh saved feeds",13)) return Action::RssRefresh;
+            if (button(ui, {428, 111, 200, 53}, ui.text(UiText::SyncCalibre), Style::Secondary, true, {}, 13)) return Action::CalibreSync;
         } else if (current == Screen::DictionaryHelp) {
             ui.label({16,50,298,27},"Offline English dictionary",17);
             ui.label({16,80,298,40},"Install over Wi-Fi or copy to SD.\nMore languages are planned.",13,ui::themes::Muted,ui::TextAlign::Start,2);

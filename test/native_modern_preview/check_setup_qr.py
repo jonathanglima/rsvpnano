@@ -7,7 +7,7 @@ import zxingcpp
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('screenshots', type=Path)
 args = parser.parse_args()
-expected = 'https://ionutdecebal.github.io/rsvpnano/'
+expected = 'https://jonathanglima.github.io/rsvpnano/'
 paths = sorted(args.screenshots.glob('setup-*-books-*.png'))
 assert len(paths) == 12, f'Expected two methods, three languages and two themes; got {len(paths)}'
 paths += sorted(args.screenshots.glob('intro-*-10.png'))

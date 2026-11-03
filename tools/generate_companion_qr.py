@@ -2,7 +2,7 @@
 from pathlib import Path
 import qrcode
 
-url = 'https://ionutdecebal.github.io/rsvpnano/'
+url = 'https://jonathanglima.github.io/rsvpnano/'
 qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=3, border=0)
 qr.add_data(url)
 qr.make(fit=True)

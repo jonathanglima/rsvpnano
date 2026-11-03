@@ -20,7 +20,7 @@ void OnboardingScreen::books(ui::Context& ui){
     });
     if(button(ui,{147,53,66,34},"Wi-Fi",uploadUsb_?Style::Plain:Style::Accent,true,{},13))uploadUsb_=false;
     if(button(ui,{219,53,66,34},"USB",uploadUsb_?Style::Accent:Style::Plain,true,{},13))uploadUsb_=true;
-    ui.label({295,53,329,34},"ionutdecebal.github.io/rsvpnano",11,Muted,ui::TextAlign::Right);
+    ui.label({295,53,329,34},"jonathanglima.github.io/rsvpnano",11,Muted,ui::TextAlign::Right);
     const C keys[]{uploadUsb_?C::UploadUsbOne:C::UploadWifiOne,uploadUsb_?C::UploadUsbTwo:C::UploadWifiTwo,uploadUsb_?C::UploadUsbThree:C::UploadWifiThree};
     for(int i=0;i<3;++i){
         const int16_t y=91+i*22;
