@@ -21,7 +21,7 @@ namespace screens {
             } else if (found >= 0) {
                 for (int16_t index = 0; index < found; ++index) {
                     const String foundSsid = WiFi.SSID(index);
-                    if (foundSsid.isEmpty())
+                    if (foundSsid.length() == 0)
                         continue;
                     const std::string candidate{foundSsid.c_str(), foundSsid.length()};
                     const int32_t rssi = WiFi.RSSI(index);
@@ -58,7 +58,7 @@ namespace screens {
     }
 
     void NetworkScreen::openWifiScan() {
-        closeWifi();
+        closeWifi();savedNetworks_=false;
         networkCount_ = 0;
         selectedNetworkIndex_ = networks_.size();
         scanState_ = WifiScanState::Idle;
@@ -119,8 +119,8 @@ namespace screens {
     }
 
     void NetworkScreen::saveNetwork(settings::SettingsStore& store, std::string_view ssid) {
-        store.settings().network.ssid = ssid;
-        store.secrets().wifiPassword = password_;
+        if(ssid.empty())settings::wifi::forgetCurrent(store.settings().network,store.secrets());
+        else settings::wifi::remember(store.settings().network,store.secrets(),std::string{ssid},password_);
         store.acceptChanges();
         store.acceptSecretChanges();
     }

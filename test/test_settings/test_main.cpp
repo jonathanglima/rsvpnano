@@ -13,7 +13,54 @@
 #include "reader/ReadingSession.h"
 #include "settings/SettingsCodec.h"
 #include "settings/SettingsGlaze.h"
+#include "settings/WifiProfiles.h"
 #include "text/UnicodeText.h"
+
+void test_saved_wifi_migrates_switches_forgets_and_keeps_passwords_private(){
+    settings::DeviceSettings device;settings::DeviceSecrets secrets;
+    device.network.ssid="Home";secrets.wifiPassword="home secret";
+    settings::wifi::remember(device.network,secrets,"Hotspot","phone secret");
+    TEST_ASSERT_EQUAL(2,secrets.wifiNetworks.size());
+    TEST_ASSERT_EQUAL_STRING("home secret",settings::wifi::password(device.network,secrets,"Home")->c_str());
+    TEST_ASSERT_EQUAL_STRING("phone secret",settings::wifi::password(device.network,secrets,"Hotspot")->c_str());
+    auto stored=settings::codec::encodeSecrets(secrets,settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE(stored.has_value());
+    auto restored=settings::codec::decodeSecrets(*stored,settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE_MESSAGE(restored.has_value(),restored?"":restored.error().message.c_str());
+    TEST_ASSERT_TRUE(secrets==*restored);
+    auto publicSettings=settings::codec::encodeToml(device,settings::SettingsSource::Sd);
+    TEST_ASSERT_EQUAL(std::string::npos,publicSettings->find("phone secret"));
+    TEST_ASSERT_EQUAL(std::string::npos,publicSettings->find("wifiNetworks"));
+    auto order=settings::wifi::connectionOrder(settings::wifi::profiles(device.network,secrets),{{"Home",-42},{"Hotspot",-80},{"Stranger",-20}});
+    TEST_ASSERT_EQUAL_STRING("Home",order.front().ssid.c_str());
+    order=settings::wifi::connectionOrder(settings::wifi::profiles(device.network,secrets),{{"Home",-42}});
+    TEST_ASSERT_EQUAL_STRING("Home",order.front().ssid.c_str());
+    settings::wifi::forgetCurrent(device.network,secrets);
+    TEST_ASSERT_FALSE(settings::wifi::password(device.network,secrets,"Hotspot").has_value());
+    TEST_ASSERT_EQUAL_STRING("Home",device.network.ssid.c_str());
+    settings::wifi::remember(device.network,secrets,"Home","changed");
+    TEST_ASSERT_EQUAL(1,secrets.wifiNetworks.size());
+    TEST_ASSERT_EQUAL_STRING("changed",secrets.wifiPassword.c_str());
+    settings::wifi::remember(device.network,secrets,"Guest","");
+    TEST_ASSERT_TRUE(settings::wifi::password(device.network,secrets,"Guest").has_value());
+    settings::wifi::forgetCurrent(device.network,secrets);settings::wifi::forgetCurrent(device.network,secrets);
+    TEST_ASSERT_TRUE(device.network.ssid.empty());TEST_ASSERT_TRUE(secrets.wifiNetworks.empty());
+}
+void test_saved_wifi_capacity_and_legacy_roundtrip(){
+    auto legacy=settings::codec::decodeSecrets("wifiPassword = \"old password\"\n",settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE(legacy.has_value());TEST_ASSERT_TRUE(legacy->wifiNetworks.empty());
+    settings::NetworkSettings network{"Original"};auto secrets=*legacy;
+    for(int i=0;i<7;++i)settings::wifi::remember(network,secrets,std::to_string(i),std::string(63,'\"'));
+    TEST_ASSERT_EQUAL(settings::wifi::kMaxProfiles,secrets.wifiNetworks.size());
+    const auto encoded=settings::codec::encodeSecrets(secrets,settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE(encoded.has_value());TEST_ASSERT_LESS_THAN(settings::kMaxSecretsBytes,encoded->size());
+    const auto decoded=settings::codec::decodeSecrets(*encoded,settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE(decoded.has_value());TEST_ASSERT_TRUE(*decoded==secrets);
+    auto ordered=settings::wifi::connectionOrder(settings::wifi::profiles(network,secrets),{});
+    TEST_ASSERT_EQUAL_STRING(network.ssid.c_str(),ordered.front().ssid.c_str());
+    const auto before=secrets;
+    settings::wifi::remember(network,secrets,std::string(33,'s'),"invalid");TEST_ASSERT_TRUE(before==secrets);
+}
 
 void setUp() {}
 void tearDown() {}
@@ -50,6 +97,18 @@ void test_enum_names_are_human_readable() {
     TEST_ASSERT_NOT_EQUAL(std::string::npos, toml->find("mode = \"page\""));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, toml->find("pauseMode = \"instant\""));
     TEST_ASSERT_NOT_EQUAL(std::string::npos, toml->find("screensaver = \"reaction\""));
+    value.reading.mode = settings::ReadingMode::chunks;
+    auto chunks = settings::codec::encodeToml(value, settings::SettingsSource::Programmatic);
+    TEST_ASSERT_TRUE(chunks.has_value());
+    auto restored = settings::codec::decodeToml(*chunks, settings::SettingsSource::Sd);
+    TEST_ASSERT_TRUE(restored.has_value());
+    TEST_ASSERT_EQUAL(settings::ReadingMode::chunks, restored->reading.mode);
+    std::string json;
+    TEST_ASSERT_TRUE(companion::api::encode(value,json).has_value());
+    auto fromCompanion = companion::api::decode<settings::DeviceSettings>(json);
+    TEST_ASSERT_TRUE(fromCompanion.has_value());
+    TEST_ASSERT_EQUAL(settings::ReadingMode::chunks, fromCompanion->reading.mode);
+
 }
 
 void test_missing_fields_retain_defaults() {
@@ -309,8 +368,32 @@ void test_visibility_toggles_only_selected_state_and_round_trips() {
     TEST_ASSERT_FALSE(invalid.has_value());
 }
 
+
+void test_onboarding_and_touch_preference_migrate_and_persist(){
+    auto old=settings::codec::decodeToml("[reading]\nwpm = 420\n[interface]\nlocale = \"de\"\n",settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE(old.has_value());TEST_ASSERT_FALSE(old->interface.onboardingComplete);TEST_ASSERT_FALSE(old->reading.holdToRead);
+    old->interface.onboardingComplete=true;old->reading.holdToRead=true;
+    auto encoded=settings::codec::encodeToml(*old,settings::SettingsSource::Nvs);TEST_ASSERT_TRUE(encoded.has_value());
+    auto restored=settings::codec::decodeToml(*encoded,settings::SettingsSource::Nvs);TEST_ASSERT_TRUE(restored.has_value());
+    TEST_ASSERT_TRUE(restored->interface.onboardingComplete);TEST_ASSERT_TRUE(restored->reading.holdToRead);TEST_ASSERT_EQUAL(420,int(restored->reading.wpm));
+}
+
+void test_pocket_lines_guides_migrate_old_settings_without_reinterpreting_horizontal_gap(){
+    auto old=settings::codec::decodeToml("[reading]\nwpm=420\n[reading.typography]\nguideWidth=30\nguideGap=8\nfontSizeIndex=3\n",settings::SettingsSource::Nvs);
+    TEST_ASSERT_TRUE(old.has_value());TEST_ASSERT_EQUAL(420,int(old->reading.wpm));TEST_ASSERT_EQUAL(3,int(old->reading.typography.fontSizeIndex));
+    TEST_ASSERT_EQUAL(12,int(old->reading.typography.guideSize));TEST_ASSERT_EQUAL(4,int(old->reading.typography.guideTextGap));
+    old->reading.typography.guideSize=24;old->reading.typography.guideTextGap=12;
+    auto encoded=settings::codec::encodeToml(*old,settings::SettingsSource::Nvs);TEST_ASSERT_TRUE(encoded.has_value());
+    TEST_ASSERT_EQUAL(std::string::npos,encoded->find("guideWidth"));TEST_ASSERT_EQUAL(std::string::npos,encoded->find("guideGap"));
+    auto restored=settings::codec::decodeToml(*encoded,settings::SettingsSource::Nvs);TEST_ASSERT_TRUE(restored.has_value());TEST_ASSERT_TRUE(*restored==*old);
+}
+
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(test_saved_wifi_migrates_switches_forgets_and_keeps_passwords_private);
+    RUN_TEST(test_saved_wifi_capacity_and_legacy_roundtrip);
+    RUN_TEST(test_pocket_lines_guides_migrate_old_settings_without_reinterpreting_horizontal_gap);
+    RUN_TEST(test_onboarding_and_touch_preference_migrate_and_persist);
     RUN_TEST(test_defaults_round_trip_through_toml_and_companion_json);
     RUN_TEST(test_battery_curve_reaches_full);
     RUN_TEST(test_visibility_toggles_only_selected_state_and_round_trips);

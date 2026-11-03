@@ -1,0 +1,49 @@
+name: Calibre tests
+
+on:
+  push:
+    branches: [calibre, calibre-new-ui]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Calibre host tests
+        run: bash test/calibre/run_host_test.sh
+
+  firmware:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - waveshare_esp32s3_touch_lcd_349_rev1
+          - waveshare_esp32s3_touch_lcd_349_rev2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Set local firmware tag
+        run: git tag -f v0.2.0-calibre HEAD
+      - name: Build firmware
+        env:
+          RSVP_FIRMWARE_TAG: v0.2.0-calibre
+        run: python3 tools/export_web_firmware.py --env "${{ matrix.environment }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: new-ui-firmware-${{ matrix.environment }}
+          path: build/firmware
+          if-no-files-found: error
