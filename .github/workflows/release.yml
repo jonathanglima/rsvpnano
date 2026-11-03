@@ -39,7 +39,7 @@ jobs:
           else
             RELEASE_TAG="$GITHUB_REF_NAME"
           fi
-          if ! echo "$RELEASE_TAG" | grep -Eq '^v0\.[01]\.[0-9]+$'; then
+          if ! echo "$RELEASE_TAG" | grep -Eq '^v0\.[01]\.[0-9]+(-calibre(\.[0-9]+)?)?$'; then
             echo "::error::Invalid release version: ${RELEASE_TAG}"
             exit 1
           fi
