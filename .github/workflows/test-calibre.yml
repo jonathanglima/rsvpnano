@@ -16,3 +16,9 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run Calibre host tests
         run: bash test/calibre/run_host_test.sh
+
+  firmware:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/firmware-build.yml
+    with:
+      firmware_tag: v0.1.5-calibre
