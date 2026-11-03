@@ -1,0 +1,127 @@
+[
+  {
+    "id": "amiri",
+    "name": "Amiri",
+    "locales": [
+      "ar"
+    ],
+    "scripts": [
+      "Arab"
+    ],
+    "file": "Amiri/font.rfont4",
+    "shaping": true
+  },
+  {
+    "id": "andika",
+    "name": "Andika",
+    "locales": [],
+    "scripts": [
+      "Latn",
+      "Cyrl"
+    ],
+    "file": "Andika/font.rfont4",
+    "shaping": false
+  },
+  {
+    "id": "atkinson-hyperlegible",
+    "name": "Atkinson Hyperlegible",
+    "locales": [],
+    "scripts": [
+      "Latn"
+    ],
+    "file": "Atkinson Hyperlegible/font.rfont4",
+    "shaping": false
+  },
+  {
+    "id": "courier-prime",
+    "name": "Courier Prime",
+    "locales": [],
+    "scripts": [
+      "Latn"
+    ],
+    "file": "Courier Prime/font.rfont4",
+    "shaping": false
+  },
+  {
+    "id": "frank-ruhl-libre",
+    "name": "Frank Ruhl Libre",
+    "locales": [
+      "he"
+    ],
+    "scripts": [
+      "Hebr"
+    ],
+    "file": "Frank Ruhl Libre/font.rfont4",
+    "shaping": true
+  },
+  {
+    "id": "noto-naskh-arabic",
+    "name": "Noto Naskh Arabic",
+    "locales": [
+      "ar"
+    ],
+    "scripts": [
+      "Arab"
+    ],
+    "file": "Noto Naskh Arabic/font.rfont4",
+    "shaping": true
+  },
+  {
+    "id": "noto-serif-hebrew",
+    "name": "Noto Serif Hebrew",
+    "locales": [
+      "he"
+    ],
+    "scripts": [
+      "Hebr"
+    ],
+    "file": "Noto Serif Hebrew/font.rfont4",
+    "shaping": true
+  },
+  {
+    "id": "noto-serif-japanese",
+    "name": "Noto Serif Japanese",
+    "locales": [
+      "ja"
+    ],
+    "scripts": [
+      "Hani",
+      "Hira",
+      "Kana"
+    ],
+    "file": "Noto Serif Japanese/font.rfont4",
+    "shaping": false
+  },
+  {
+    "id": "noto-serif-simplified-chinese",
+    "name": "Noto Serif Simplified Chinese",
+    "locales": [
+      "zh-Hans"
+    ],
+    "scripts": [
+      "Hani"
+    ],
+    "file": "Noto Serif Simplified Chinese/font.rfont4",
+    "shaping": false
+  },
+  {
+    "id": "opendyslexic",
+    "name": "OpenDyslexic",
+    "locales": [],
+    "scripts": [
+      "Latn"
+    ],
+    "file": "OpenDyslexic/font.rfont4",
+    "shaping": false
+  },
+  {
+    "id": "stix-two-math",
+    "name": "STIX Two Math",
+    "locales": [],
+    "scripts": [
+      "Zmth"
+    ],
+    "file": "STIX Two Math/font.rfont4",
+    "shaping": false
+  }
+]

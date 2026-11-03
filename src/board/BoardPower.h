@@ -2,23 +2,43 @@
 
 #include <Arduino.h>
 
-#include "board/BoardConfig.h"
-
 namespace Board::Power {
 
-using BatteryStatus = Board::Config::BatteryStatus;
-using DiagnosticSnapshot = Board::Config::PowerDiagnosticSnapshot;
+    struct BatteryStatus {
+        bool present = false;
+        float voltage = 0.0f;
+        uint8_t percent = 0;
+    };
 
-void begin();
-void prepareDeepSleepPowerHold();
-void resetWakePeripherals();
-bool enableAudioPowerIfAvailable();
-bool readBatteryStatus(BatteryStatus &status);
-DiagnosticSnapshot diagnosticSnapshot();
-bool externalPowerPresent();
-bool releaseBatteryPowerHold();
-bool powerOffUsesControllerWake();
-bool shouldRequestShutdownOnPowerOff();
-bool shouldReleaseBatteryPowerBeforeDeepSleep();
+    struct Diagnostics {
+        bool available = false;
+        bool externalPowerPresent = false;
+        uint8_t status1 = 0;
+        uint8_t status2 = 0;
+        uint8_t powerKeyIrqStatus = 0;
+    };
 
-}  // namespace Board::Power
+    struct BatteryState {
+        BatteryStatus status;
+        uint32_t sampledAtMs = 0;
+        bool charging = false;
+    };
+
+    void begin();
+    bool enableAudioPowerIfAvailable();
+    bool readBatteryStatus(BatteryStatus& status);
+    Diagnostics readDiagnostics();
+    bool externalPowerPresent();
+    bool powerOff();
+    bool powerButtonHeld();
+
+    inline void updateBattery(BatteryState& battery, uint32_t nowMs, bool force = false) {
+        constexpr uint32_t kSampleIntervalMs = 120000;
+        if (!force && nowMs - battery.sampledAtMs < kSampleIntervalMs)
+            return;
+        battery.sampledAtMs = nowMs;
+        if (readBatteryStatus(battery.status))
+            battery.charging = externalPowerPresent();
+    }
+
+} // namespace Board::Power

@@ -1,0 +1,1017 @@
+@file:OptIn(ExperimentalWasmJsInterop::class)
+
+package com.rsvpnano.web.setup
+
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ShoppingCart
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.rsvpnano.connection.NanoConnectionTransport
+import com.rsvpnano.presentation.CompanionPresenter
+import com.rsvpnano.presentation.CompanionUiState
+import com.rsvpnano.web.connection.BrowserSerial
+import com.rsvpnano.web.connection.reconnectAuthorizedUsb
+import com.rsvpnano.web.connection.requestUsbConnection
+import com.rsvpnano.web.connection.supportsWebSerial
+import com.rsvpnano.web.ui.ReactionBackdrop
+import io.github.vinceglb.filekit.BrowserFile
+import io.github.vinceglb.filekit.WebFile
+import io.github.vinceglb.filekit.dialogs.FileKitType
+import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
+import io.github.vinceglb.filekit.name
+import kotlinx.browser.window
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+private data class InstallerBoard(
+    val id: String,
+    val name: String,
+    val badge: String,
+    val note: String,
+    val storeUrl: String,
+    val chipFamily: String,
+    val bootloaderHelp: String,
+)
+
+private const val BootloaderWithReset = "Hold BOOT, tap RESET, then release BOOT."
+private const val BootloaderWithPower = "Turn the Nano off, hold BOOT while turning it on, then release BOOT."
+
+private val InstallerBoards = listOf(
+    InstallerBoard("lcd349-v1", "LCD 3.49 / rev1", "RECOMMENDED", "For most 3.49-inch readers.", "https://www.waveshare.com/esp32-s3-touch-lcd-3.49.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithReset),
+    InstallerBoard("lcd349-v2", "LCD 3.49 / rev2", "REVISION 2", "Try this if rev1 brightness does not work.", "https://www.waveshare.com/esp32-s3-touch-lcd-3.49.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithReset),
+    InstallerBoard("amoled18-v1", "AMOLED 1.8 / V1", "VERSION 1", "The original 1.8-inch board.", "https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithPower),
+    InstallerBoard("amoled18-v2", "AMOLED 1.8 / V2", "VERSION 2", "The newer revision; still being tested.", "https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithPower),
+    InstallerBoard("amoled206", "AMOLED 2.06", "AMOLED", "The 2.06-inch touch board.", "https://www.waveshare.com/esp32-s3-touch-amoled-2.06.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithPower),
+    InstallerBoard("amoled216", "AMOLED 2.16", "3 BUTTON", "The square 2.16-inch board. Regular layout.", "https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithPower),
+    InstallerBoard("amoled241", "AMOLED 2.41 / V1", "VERSION 1", "V1 hardware only (no Rev2.0 marking). Regular layout.", "https://www.waveshare.com/esp32-s3-touch-amoled-2.41.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithReset),
+    InstallerBoard("amoled241-v2", "AMOLED 2.41 / V2", "VERSION 2", "Rev2.0 PCB or V2 QC label. Regular layout.", "https://www.waveshare.com/esp32-s3-touch-amoled-2.41.htm?&aff_id=ionutdecebal", "ESP32-S3", BootloaderWithReset),
+    InstallerBoard("lcd147-c6", "LCD 1.47 / C6", "COMPACT", "The compact 1.47-inch touch board.", "https://www.waveshare.com/esp32-c6-touch-lcd-1.47.htm?&aff_id=ionutdecebal", "ESP32-C6", BootloaderWithReset),
+)
+
+internal enum class FirmwareFilenameMatch { Match, DifferentBoard, Unknown, Ota }
+
+private data class SelectedFirmware(val name: String, val file: BrowserFile)
+private data class FirmwareInstallState(
+    val bootloaderReady: Boolean = false,
+    val running: Boolean = false,
+    val complete: Boolean = false,
+    val message: String? = null,
+    val percentage: Int? = null,
+    val failed: Boolean = false,
+)
+
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+internal fun SetupWizard(presenter: CompanionPresenter, state: CompanionUiState, modifier: Modifier = Modifier) {
+    var step by remember {
+        mutableIntStateOf(window.localStorage.getItem("rsvpnano.web.setupStep")?.toIntOrNull()?.coerceIn(0, 4) ?: 0)
+    }
+    var boardId by remember {
+        mutableStateOf(window.localStorage.getItem("rsvpnano.web.board") ?: InstallerBoards.first().id)
+    }
+    var selectedFirmware by remember { mutableStateOf<SelectedFirmware?>(null) }
+    var availableReleases by remember { mutableStateOf<List<DeployedRelease>>(emptyList()) }
+    var releaseId by remember { mutableStateOf("classic") }
+    var releaseError by remember { mutableStateOf<String?>(null) }
+    val board = InstallerBoards.firstOrNull { it.id == boardId } ?: InstallerBoards.first()
+    val eligibleReleases = availableReleases.forBoard(board.id)
+    val deployedRelease = eligibleReleases.firstOrNull { it.id == releaseId }
+        ?: eligibleReleases.firstOrNull { it.id == "classic" }
+    var installState by remember(board.id) { mutableStateOf(FirmwareInstallState()) }
+    val serialAvailable = supportsWebSerial()
+    val secure = isSecureContext()
+    val installerReady = state.connectionState.transport != NanoConnectionTransport.Usb
+    val firmwarePicker = rememberFilePickerLauncher(FileKitType.File(listOf("bin"))) { file ->
+        val browserFile = (file?.webFile as? WebFile.FileWrapper)?.file
+        selectedFirmware = if (file != null && browserFile != null) SelectedFirmware(file.name, browserFile) else null
+    }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        runCatching { fetchDeployedRelease() }
+            .onSuccess { availableReleases = it }
+            .onFailure { releaseError = "The latest firmware is not available right now. You can still choose a firmware file." }
+    }
+
+    fun advance(next: Int) {
+        step = next.coerceIn(0, 4)
+        window.localStorage.setItem("rsvpnano.web.setupStep", step.toString())
+    }
+
+    fun installFirmware(version: String, firmwareUrl: String, eraseFirst: Boolean) {
+        installState = FirmwareInstallState(
+            bootloaderReady = true,
+            running = true,
+            message = "Choose your Nano in the browser dialog.",
+        )
+        launchFirmware(
+            board = board,
+            version = version,
+            firmwareUrl = firmwareUrl,
+            eraseFirst = eraseFirst,
+            onState = { message, percentage ->
+                installState = FirmwareInstallState(
+                    bootloaderReady = true,
+                    running = true,
+                    message = message,
+                    percentage = percentage.takeIf { it >= 0 },
+                )
+            },
+            onFinished = {
+                installState = FirmwareInstallState(
+                    bootloaderReady = true,
+                    complete = true,
+                    message = "Installed. Your Nano is restarting.",
+                    percentage = 100,
+                )
+            },
+            onError = { message ->
+                installState = FirmwareInstallState(
+                    bootloaderReady = true,
+                    message = message,
+                    failed = true,
+                )
+            },
+        )
+    }
+
+    androidx.compose.runtime.LaunchedEffect(step, serialAvailable, state.isConnected) {
+        if (step == 2 && serialAvailable && !state.isConnected) {
+            repeat(10) {
+                if (reconnectAuthorizedUsb(presenter)) return@LaunchedEffect
+                delay(3_000)
+            }
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(step, state.connectionState.transport) {
+        if (step == 1 && state.connectionState.transport == NanoConnectionTransport.Usb) {
+            BrowserSerial.releaseForInstaller(presenter)
+        }
+    }
+
+    val stagedFirmware = deployedRelease?.firmware?.get(board.id)
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val narrow = maxWidth < 760.dp
+        Column(
+            Modifier.align(Alignment.TopCenter).fillMaxSize().widthIn(max = 1120.dp),
+        ) {
+            if (step == 1) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Choose your interface", fontWeight = FontWeight.Bold)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        eligibleReleases.forEach { release ->
+                            OutlinedButton(onClick = { releaseId = release.id }, enabled = !installState.running) {
+                                Text((if (release.id == deployedRelease?.id) "✓ " else "") + release.label)
+                            }
+                        }
+                    }
+                    Text(if (deployedRelease?.id != "new-ui") "The existing community firmware. Stable and selected by default."
+                        else "New interface, onboarding and dictionary. Preview for LCD 3.49 Rev1 and Rev2. Notes and phone sync are deferred.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            val frameShape = RoundedCornerShape(28.dp)
+            val frameBase = MaterialTheme.colorScheme.surface
+            Column(
+                Modifier.fillMaxWidth().weight(1f).clip(frameShape)
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                frameBase,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.08f).compositeOver(frameBase),
+                                MaterialTheme.colorScheme.tertiary.copy(alpha = 0.05f).compositeOver(frameBase),
+                            ),
+                        ),
+                    )
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.24f), frameShape),
+            ) {
+                if (narrow) {
+                    WizardSteps(
+                        step,
+                        state.isConnected,
+                        installState.complete,
+                        installState.running,
+                        ::advance,
+                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                    Box(Modifier.fillMaxWidth().weight(1f)) {
+                        WizardStage(
+                            step = step,
+                            board = board,
+                            state = state,
+                            secure = secure,
+                            serialAvailable = serialAvailable,
+                            installerReady = installerReady,
+                            stagedFirmware = stagedFirmware,
+                            deployedRelease = deployedRelease,
+                            releaseError = releaseError,
+                            selectedFirmware = selectedFirmware,
+                            installState = installState,
+                            onBoardSelected = { candidate ->
+                                boardId = candidate.id
+                                window.localStorage.setItem("rsvpnano.web.board", candidate.id)
+                            },
+                            onBootloaderReady = {
+                                installState = installState.copy(bootloaderReady = true, message = null, failed = false)
+                            },
+                            onInstallLatest = { eraseFirst ->
+                                stagedFirmware?.let { filename ->
+                                    installFirmware(deployedRelease?.version.orEmpty(), absoluteUrl("firmware/$filename"), eraseFirst)
+                                }
+                            },
+                            onChooseFile = { firmwarePicker.launch() },
+                            onInstallFile = { firmware, eraseFirst ->
+                                installFirmware("custom", createObjectUrl(firmware.file), eraseFirst)
+                            },
+                            onUsbConnect = { requestUsbConnection(presenter) },
+                            onStep = ::advance,
+                            compact = true,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                } else {
+                    Row(Modifier.fillMaxSize()) {
+                        Column(Modifier.weight(1f).fillMaxHeight()) {
+                            WizardSteps(
+                                step,
+                                state.isConnected,
+                                installState.complete,
+                                installState.running,
+                                ::advance,
+                                Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            )
+                            WizardStage(
+                                step = step,
+                                board = board,
+                                state = state,
+                                secure = secure,
+                                serialAvailable = serialAvailable,
+                                installerReady = installerReady,
+                                stagedFirmware = stagedFirmware,
+                                deployedRelease = deployedRelease,
+                                releaseError = releaseError,
+                                selectedFirmware = selectedFirmware,
+                                installState = installState,
+                                onBoardSelected = { candidate ->
+                                    boardId = candidate.id
+                                    window.localStorage.setItem("rsvpnano.web.board", candidate.id)
+                                },
+                                onBootloaderReady = {
+                                    installState = installState.copy(bootloaderReady = true, message = null, failed = false)
+                                },
+                                onInstallLatest = { eraseFirst ->
+                                    stagedFirmware?.let { filename ->
+                                        installFirmware(deployedRelease?.version.orEmpty(), absoluteUrl("firmware/$filename"), eraseFirst)
+                                    }
+                                },
+                                onChooseFile = { firmwarePicker.launch() },
+                                onInstallFile = { firmware, eraseFirst ->
+                                    installFirmware("custom", createObjectUrl(firmware.file), eraseFirst)
+                                },
+                                onUsbConnect = { requestUsbConnection(presenter) },
+                                onStep = ::advance,
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                            )
+                        }
+                        ReactionPanel(
+                            step,
+                            board,
+                            state,
+                            modifier = Modifier.widthIn(min = 280.dp, max = 330.dp).fillMaxHeight(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WizardSteps(
+    step: Int,
+    connected: Boolean,
+    installComplete: Boolean,
+    navigationLocked: Boolean,
+    onStep: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+    ) {
+        listOf("Choose device", "Install", "Connect", "Personalize", "Ready").forEachIndexed { index, label ->
+            val selected = index == step
+            val enabled = !navigationLocked &&
+                (index <= step || connected) &&
+                (step != 1 || index <= 1 || installComplete)
+            val shape = RoundedCornerShape(50)
+            val background by animateColorAsState(
+                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                animationSpec = tween(180),
+            )
+            Box(
+                Modifier.clip(shape)
+                    .background(background)
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f), shape)
+                    .graphicsLayer { alpha = if (selected || enabled) 1f else 0.42f }
+                    .clickable(enabled = enabled) { onStep(index) }
+                    .padding(horizontal = 13.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+private fun WizardStage(
+    step: Int,
+    board: InstallerBoard,
+    state: CompanionUiState,
+    secure: Boolean,
+    serialAvailable: Boolean,
+    installerReady: Boolean,
+    stagedFirmware: String?,
+    deployedRelease: DeployedRelease?,
+    releaseError: String?,
+    selectedFirmware: SelectedFirmware?,
+    installState: FirmwareInstallState,
+    onBoardSelected: (InstallerBoard) -> Unit,
+    onBootloaderReady: () -> Unit,
+    onInstallLatest: (Boolean) -> Unit,
+    onChooseFile: () -> Unit,
+    onInstallFile: (SelectedFirmware, Boolean) -> Unit,
+    onUsbConnect: () -> Unit,
+    onStep: (Int) -> Unit,
+    compact: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.padding(
+            horizontal = if (compact) 18.dp else 30.dp,
+            vertical = if (compact) 14.dp else 26.dp,
+        ),
+    ) {
+        AnimatedContent(
+            targetState = step,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            transitionSpec = {
+                val direction = if (targetState > initialState) 1 else -1
+                (slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { direction * it / 3 } +
+                    fadeIn(tween(220)) + scaleIn(tween(280), initialScale = 0.985f)) togetherWith
+                    (slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { -direction * it / 4 } +
+                        fadeOut(tween(170)))
+            },
+            contentAlignment = Alignment.TopStart,
+            label = "setup step",
+        ) { activeStep ->
+            Box(Modifier.fillMaxWidth()) {
+                when (activeStep) {
+                    0 -> ChooseBoardPage(board, onBoardSelected)
+                    1 -> InstallPage(
+                        board = board,
+                        secure = secure,
+                        serialAvailable = serialAvailable,
+                        installerReady = installerReady,
+                        stagedFirmware = stagedFirmware,
+                        deployedRelease = deployedRelease,
+                        releaseError = releaseError,
+                        selectedFirmware = selectedFirmware,
+                        installState = installState,
+                        onBootloaderReady = onBootloaderReady,
+                        onInstallLatest = onInstallLatest,
+                        onChooseFile = onChooseFile,
+                        onInstallFile = onInstallFile,
+                    )
+                    2 -> ConnectPage(state, secure, serialAvailable, onUsbConnect)
+                    3 -> PersonalizePage()
+                    else -> ReadyPage()
+                }
+            }
+        }
+        WizardFooter(step, board, state.isConnected, installState, compact, onStep)
+    }
+}
+
+@Composable
+private fun ChooseBoardPage(board: InstallerBoard, onBoardSelected: (InstallerBoard) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        WizardIntro("YOUR READER", "Which Nano do you have?", "The installer uses this to choose the right firmware and display settings.")
+        BoardGrid(board.id, onBoardSelected)
+        Text(
+            "Store links are affiliate links. A purchase may support RSVP Nano at no extra cost to you.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+        )
+    }
+}
+
+@Composable
+private fun InstallPage(
+    board: InstallerBoard,
+    secure: Boolean,
+    serialAvailable: Boolean,
+    installerReady: Boolean,
+    stagedFirmware: String?,
+    deployedRelease: DeployedRelease?,
+    releaseError: String?,
+    selectedFirmware: SelectedFirmware?,
+    installState: FirmwareInstallState,
+    onBootloaderReady: () -> Unit,
+    onInstallLatest: (Boolean) -> Unit,
+    onChooseFile: () -> Unit,
+    onInstallFile: (SelectedFirmware, Boolean) -> Unit,
+) {
+    var bootloaderBusy by remember { mutableStateOf(false) }
+    var bootloaderStatus by remember(board.id) { mutableStateOf<String?>(null) }
+    var eraseFirst by remember(board.id) { mutableStateOf(false) }
+    val canUseInstaller = secure && serialAvailable && installerReady
+    val restart = {
+        bootloaderBusy = true
+        bootloaderStatus = "Restarting your Nano..."
+        restartNanoInBootloader(
+            {
+                bootloaderBusy = false
+                bootloaderStatus = null
+                onBootloaderReady()
+            },
+            { message ->
+                bootloaderBusy = false
+                bootloaderStatus = message
+            },
+        )
+    }
+
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        WizardIntro("FIRMWARE", "Install RSVP Nano", "Three short steps. Keep ${board.name} plugged in.")
+
+        InstallStepCard(1, "Enter bootloader", installState.bootloaderReady, !installState.running) {
+            if (installState.bootloaderReady) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("Bootloader ready.", modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    if (!installState.complete) {
+                        OutlinedButton(
+                            onClick = restart,
+                            enabled = canUseInstaller && !bootloaderBusy && !installState.running,
+                        ) { Text(if (bootloaderBusy) "Restarting..." else "Restart again") }
+                    }
+                }
+            } else {
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val manualReady = {
+                        bootloaderStatus = null
+                        onBootloaderReady()
+                    }
+                    if (maxWidth < 560.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = restart, enabled = canUseInstaller && !bootloaderBusy) {
+                                Text(if (bootloaderBusy) "Restarting..." else "Restart for me")
+                            }
+                            Text("Or ${board.bootloaderHelp.replaceFirstChar { it.lowercase() }}", style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick = manualReady, enabled = !bootloaderBusy) { Text("I've done this") }
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(onClick = restart, enabled = canUseInstaller && !bootloaderBusy) {
+                                Text(if (bootloaderBusy) "Restarting..." else "Restart for me")
+                            }
+                            Text(
+                                "Or ${board.bootloaderHelp.replaceFirstChar { it.lowercase() }}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            OutlinedButton(onClick = manualReady, enabled = !bootloaderBusy) { Text("I've done this") }
+                        }
+                    }
+                }
+            }
+            bootloaderStatus?.let { status ->
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (bootloaderBusy) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+            }
+        }
+        InstallStepCard(2, "Install firmware", installState.complete, installState.bootloaderReady) {
+            if (!installState.bootloaderReady) {
+                Text("Complete step 1 to unlock installation.", style = MaterialTheme.typography.bodySmall)
+            } else {
+                val blocker = when {
+                    !secure -> "Open this page over HTTPS to install."
+                    !serialAvailable -> "Use Chrome or Edge on a computer."
+                    !installerReady -> "Preparing USB..."
+                    else -> null
+                }
+                blocker?.let { Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall) }
+                if (deployedRelease != null && stagedFirmware == null) {
+                    Text("No release is available for this Nano yet.", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+                } else if (releaseError != null) {
+                    Text(releaseError, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(deployedRelease?.label ?: "Firmware", fontWeight = FontWeight.Bold)
+                        Text(deployedRelease?.version ?: "Checking...", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(
+                        onClick = { onInstallLatest(eraseFirst) },
+                        enabled = canUseInstaller && stagedFirmware != null && !installState.running,
+                    ) { Text("Install") }
+                }
+
+                OutlinedButton(onClick = onChooseFile, enabled = !installState.running) {
+                    Text("Choose a firmware file")
+                }
+                selectedFirmware?.let { firmware ->
+                    val match = firmwareFilenameMatch(board.id, firmware.name)
+                    Text(firmware.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        firmwareMessage(match),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (match == FirmwareFilenameMatch.Match) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                    )
+                    Button(
+                        onClick = { onInstallFile(firmware, eraseFirst) },
+                        enabled = canUseInstaller && !installState.running && match != FirmwareFilenameMatch.Ota,
+                    ) { Text("Install selected file") }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Switch(
+                        checked = eraseFirst,
+                        onCheckedChange = { eraseFirst = it },
+                        enabled = !installState.running,
+                    )
+                    Text("Erase existing settings first", style = MaterialTheme.typography.bodySmall)
+                }
+
+                if (installState.running) {
+                    installState.percentage?.let { percentage ->
+                        LinearProgressIndicator(progress = { percentage / 100f }, modifier = Modifier.fillMaxWidth())
+                    } ?: LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                installState.message?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            installState.failed -> MaterialTheme.colorScheme.error
+                            installState.complete -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                        },
+                    )
+                }
+            }
+        }
+
+        InstallStepCard(3, "Continue setup", installState.complete, installState.complete) {
+            Text(
+                if (installState.complete) "Firmware installed. Continue below." else "Unlocks when installation finishes.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun InstallStepCard(
+    number: Int,
+    title: String,
+    completed: Boolean,
+    enabled: Boolean,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = if (completed || enabled) 1f else 0.42f },
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (completed || enabled) 0.72f else 0.4f),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (completed) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+            else MaterialTheme.colorScheme.outline.copy(alpha = 0.24f),
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    Modifier.size(30.dp).clip(CircleShape).background(
+                        if (completed) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        number.toString(),
+                        color = if (completed) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Black,
+                    )
+                }
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Black)
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ConnectPage(state: CompanionUiState, secure: Boolean, serialAvailable: Boolean, onUsbConnect: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
+    ) {
+        WizardIntro("CONNECTION", "Meet your Nano", "Connect once so the site can verify your reader and finish setup.")
+        if (state.isConnected) {
+            Text("Connected", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black)
+        }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val stacked = maxWidth < 560.dp
+            val usb: @Composable () -> Unit = {
+                ConnectionChoice(
+                    title = "USB",
+                    description = "Best while the Nano is beside you.",
+                    action = "Connect with USB",
+                    enabled = secure && serialAvailable,
+                    onClick = onUsbConnect,
+                )
+            }
+            val network: @Composable () -> Unit = {
+                ConnectionChoice(
+                    title = "Local network",
+                    description = "Use the connection controls at the top of the page.",
+                    action = "Use network",
+                    enabled = true,
+                    onClick = { window.location.hash = "#/device" },
+                )
+            }
+            if (stacked) Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { usb(); network() }
+            else Row(horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+                Column(Modifier.weight(1f)) { usb() }
+                Column(Modifier.weight(1f)) { network() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionChoice(title: String, description: String, action: String, enabled: Boolean, onClick: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
+        Text(description, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text(action) }
+    }
+}
+
+@Composable
+private fun PersonalizePage() {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
+    ) {
+        WizardIntro("OPTIONAL", "Make it yours", "You can set the reading experience now or come back whenever you like.")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            OutlinedButton(onClick = { window.location.hash = "#/appearance/themes" }, modifier = Modifier.weight(1f).height(52.dp)) {
+                Text("Appearance")
+            }
+            OutlinedButton(onClick = { window.location.hash = "#/settings/reading" }, modifier = Modifier.weight(1f).height(52.dp)) {
+                Text("Reading")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReadyPage() {
+    Column(
+        Modifier.fillMaxWidth().fillMaxHeight(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.size(14.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+        Spacer(Modifier.height(18.dp))
+        Text("Your Nano is ready", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+        Text("Add a book or keep exploring the site.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f))
+    }
+}
+
+@Composable
+private fun WizardIntro(eyebrow: String, title: String, description: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(eyebrow, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+        Text(description, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+    }
+}
+
+@Composable
+private fun WizardFooter(
+    step: Int,
+    board: InstallerBoard,
+    connected: Boolean,
+    installState: FirmwareInstallState,
+    compact: Boolean,
+    onStep: (Int) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = if (compact) 8.dp else 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (step in 1..4) OutlinedButton(onClick = { onStep(step - 1) }, enabled = !installState.running) { Text("Back") }
+        else Spacer(Modifier.size(1.dp))
+        when (step) {
+            0 -> Button(onClick = { onStep(1) }) { Text("Continue with ${board.name}") }
+            1 -> Button(onClick = { onStep(2) }, enabled = installState.complete) { Text("Continue") }
+            2 -> Button(onClick = { onStep(3) }, enabled = connected) { Text("Continue") }
+            3 -> Button(onClick = { onStep(4) }) { Text("Finish") }
+            else -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onStep(0) }) { Text("Set up another") }
+                Button(onClick = { window.location.hash = "#/library" }) { Text("Open library") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReactionPanel(
+    step: Int,
+    board: InstallerBoard,
+    state: CompanionUiState,
+    modifier: Modifier = Modifier,
+) {
+    val captions = listOf(
+        "Choose the hardware in front of you.",
+        "Firmware brings the reader to life.",
+        "Verify the Nano before moving on.",
+        "Tune the reader to your habits.",
+        "Everything is ready for your library.",
+    )
+    val panelBase = MaterialTheme.colorScheme.surface
+    Box(
+        modifier.background(
+            Brush.linearGradient(
+                listOf(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.24f).compositeOver(panelBase),
+                    panelBase,
+                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f).compositeOver(panelBase),
+                ),
+            ),
+        ),
+    ) {
+        ReactionBackdrop(Modifier.matchParentSize())
+        Box(
+            Modifier.matchParentSize().background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, panelBase.copy(alpha = 0.9f)),
+                    startY = 40f,
+                ),
+            ),
+        )
+        Column(
+            Modifier.align(Alignment.BottomStart).padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text("REACTION", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Black)
+            Text(
+                captions[step],
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                if (state.isConnected) "Nano connected" else board.name,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BoardGrid(selectedId: String, onSelect: (InstallerBoard) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = when {
+            maxWidth >= 600.dp -> 4
+            maxWidth >= 500.dp -> 3
+            maxWidth >= 340.dp -> 2
+            else -> 1
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            InstallerBoards.chunked(columns).forEach { boards ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    boards.forEach { board ->
+                        BoardTile(board, board.id == selectedId, { onSelect(board) }, Modifier.weight(1f))
+                    }
+                    repeat(columns - boards.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoardTile(board: InstallerBoard, selected: Boolean, onSelect: () -> Unit, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(16.dp)
+    val interactions = remember { MutableInteractionSource() }
+    val hovered by interactions.collectIsHoveredAsState()
+    val pressed by interactions.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = when {
+            pressed -> 0.985f
+            hovered -> 1.012f
+            else -> 1f
+        },
+        animationSpec = tween(120),
+    )
+    val border = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+    val background by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.13f) else MaterialTheme.colorScheme.surface,
+        animationSpec = tween(180),
+    )
+    Surface(
+        modifier.graphicsLayer(scaleX = scale, scaleY = scale).clip(shape)
+            .border(if (selected) 2.dp else 1.dp, border, shape)
+            .clickable(interactionSource = interactions, indication = null, onClick = onSelect),
+        color = background,
+        shape = shape,
+    ) {
+        Column(Modifier.fillMaxWidth().height(122.dp).padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(board.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(board.badge, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                }
+                IconButton(onClick = { window.open(board.storeUrl, "_blank") }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Outlined.ShoppingCart, "Open store page", Modifier.size(19.dp))
+                }
+            }
+            Text(board.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+        }
+    }
+}
+
+internal fun firmwareFilenameMatch(selectedBoardId: String, filename: String): FirmwareFilenameMatch {
+    val normalized = filename.lowercase()
+    if (normalized.endsWith("-ota.bin")) return FirmwareFilenameMatch.Ota
+
+    val fileBoardId = when {
+        "touch-lcd-3.49-rev2" in normalized || normalized == "rsvp-nano-rev2.bin" -> "lcd349-v2"
+        "touch-lcd-3.49" in normalized || normalized == "rsvp-nano.bin" -> "lcd349-v1"
+        "touch-amoled-1.8-v2" in normalized -> "amoled18-v2"
+        "touch-amoled-1.8" in normalized -> "amoled18-v1"
+        "touch-amoled-2.06" in normalized -> "amoled206"
+        "touch-amoled-2.16" in normalized -> "amoled216"
+        "touch-amoled-2.41-v2" in normalized -> "amoled241-v2"
+        "touch-amoled-2.41" in normalized -> "amoled241"
+        "esp32-c6-touch-lcd-1.47" in normalized -> "lcd147-c6"
+        else -> null
+    }
+    return when (fileBoardId) {
+        null -> FirmwareFilenameMatch.Unknown
+        selectedBoardId -> FirmwareFilenameMatch.Match
+        else -> FirmwareFilenameMatch.DifferentBoard
+    }
+}
+
+private fun firmwareMessage(match: FirmwareFilenameMatch): String = when (match) {
+    FirmwareFilenameMatch.Match -> "This filename matches the Nano you selected."
+    FirmwareFilenameMatch.DifferentBoard -> "This filename appears to be for a different Nano. Check the board before continuing."
+    FirmwareFilenameMatch.Unknown -> "This is not a recognized release filename. Only continue if you trust this custom firmware."
+    FirmwareFilenameMatch.Ota -> "This appears to be an update-only file. Choose the full installer file without “-ota” in its name."
+}
+
+private fun launchFirmware(
+    board: InstallerBoard,
+    version: String,
+    firmwareUrl: String,
+    eraseFirst: Boolean,
+    onState: (String, Int) -> Unit,
+    onFinished: () -> Unit,
+    onError: (String) -> Unit,
+) {
+    val manifest = buildJsonObject {
+        put("name", "RSVP Nano ${board.name}")
+        put("version", version)
+        put("builds", buildJsonArray {
+            add(buildJsonObject {
+                put("chipFamily", board.chipFamily)
+                put("parts", buildJsonArray {
+                    for (offset in listOf(0, 0x8000, 0xE000, 0x10000)) {
+                        add(buildJsonObject {
+                            put("path", firmwareUrl)
+                            put("offset", offset)
+                        })
+                    }
+                })
+            })
+        })
+    }.toString()
+    launchInlineEspInstaller(manifest, firmwareUrl, eraseFirst, onState, onFinished, onError)
+}
+
+private suspend fun fetchDeployedRelease(): List<DeployedRelease> = suspendCancellableCoroutine { continuation ->
+    fetchDeployedReleaseJson(
+        { body ->
+            runCatching {
+                parseDeployedReleases(body)
+            }.onSuccess(continuation::resume)
+                .onFailure(continuation::resumeWithException)
+        },
+        { message -> continuation.resumeWithException(IllegalStateException(message)) },
+    )
+}
+
+@JsFun("() => window.isSecureContext")
+private external fun isSecureContext(): Boolean
+
+@JsFun("(file) => URL.createObjectURL(file)")
+private external fun createObjectUrl(file: BrowserFile): String
+
+@JsFun("(path) => new URL(path, document.baseURI).href")
+private external fun absoluteUrl(path: String): String
+
+@JsFun("""(ok, fail) => { (async () => { let port; let disconnected = false; let resolveDisconnect; const wait = ms => new Promise(resolve => setTimeout(resolve, ms)); const disconnect = new Promise(resolve => { resolveDisconnect = resolve; }); const onDisconnect = event => { if (event.target === port || event.port === port) { disconnected = true; resolveDisconnect(); } }; navigator.serial.addEventListener('disconnect', onDisconnect); try { port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] }); try { await port.open({ baudRate: 1200 }); } catch (error) { await Promise.race([disconnect, wait(1000)]); if (!disconnected) throw error; } if (!disconnected) { await wait(200); try { await port.close(); } catch (error) { await Promise.race([disconnect, wait(1000)]); if (!disconnected) throw error; } await Promise.race([disconnect, wait(4000)]); if (!disconnected) throw new Error('Nano did not restart in bootloader mode. Try the BOOT and RESET buttons instead.'); } await wait(800); ok(); } catch (error) { fail(error?.message || String(error)); } finally { navigator.serial.removeEventListener('disconnect', onDisconnect); try { if (!disconnected) await port?.close(); } catch (_) {} } })(); }""")
+internal external fun restartNanoInBootloader(ok: () -> Unit, fail: (String) -> Unit)
+
+@JsFun("(ok, fail) => fetch(new URL('firmware/release.json', document.baseURI), { cache: 'no-store' }).then(response => { if (!response.ok) throw new Error('HTTP ' + response.status); return response.text(); }).then(ok).catch(error => fail(error?.message || String(error)))")
+private external fun fetchDeployedReleaseJson(ok: (String) -> Unit, fail: (String) -> Unit)
