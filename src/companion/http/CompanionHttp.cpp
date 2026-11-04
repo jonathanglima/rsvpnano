@@ -83,7 +83,7 @@ namespace {
     }
 
     [[nodiscard]] bool isAllowedOrigin(std::string_view origin) {
-        return origin == "https://ionutdecebal.github.io" || isLocalDevelopmentOrigin(origin, "localhost") ||
+        return origin == "https://ionutdecebal.github.io" || origin == "https://jonathanglima.github.io" || isLocalDevelopmentOrigin(origin, "localhost") ||
                isLocalDevelopmentOrigin(origin, "127.0.0.1") || isLocalDevelopmentOrigin(origin, "[::1]");
     }
 

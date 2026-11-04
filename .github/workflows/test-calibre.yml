@@ -1,0 +1,24 @@
+name: Calibre tests
+
+on:
+  push:
+    branches: [calibre, calibre-new-ui]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Calibre host tests
+        run: bash test/calibre/run_host_test.sh
+
+  firmware:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/firmware-build.yml
+    with:
+      firmware_tag: v0.1.5-calibre
