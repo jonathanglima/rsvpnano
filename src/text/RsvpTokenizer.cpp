@@ -1,56 +1,61 @@
 #include "text/RsvpTokenizer.h"
 
-#include <algorithm>
-
-#include "text/LatinText.h"
+#include "text/UnicodeText.h"
+#include "text/Utf8Text.h"
 
 namespace RsvpText {
 
-namespace Detail {
+    namespace Detail {
 
-bool isWordBoundary(char c) {
-  const uint8_t value = LatinText::byteValue(c);
-  return value <= ' ' && !LatinText::isWordCharacter(value) &&
-         !LatinText::isLowCustomSlotByte(value);
-}
+        bool isWordBoundary(char c) {
+            return static_cast<uint8_t>(c) <= ' ';
+        }
 
-bool isInlineWordHyphen(const String &text, size_t index) {
-  if (index == 0 || index + 1 >= text.length() || text[index] != '-') {
-    return false;
-  }
-  if (text[index - 1] == '-' || text[index + 1] == '-') {
-    return false;
-  }
-  return isReadableTokenChar(text[index - 1]) &&
-         isReadableTokenChar(text[index + 1]);
-}
+        bool isInlineWordHyphen(std::string_view text, size_t index) {
+            if (index == 0 || index + 1 >= text.length() || text[index] != '-') {
+                return false;
+            }
+            if (text[index - 1] == '-' || text[index + 1] == '-') {
+                return false;
+            }
+            std::string_view before = text.substr(0, index);
+            before.remove_prefix(Utf8Text::lastCodepointStart(before));
+            std::string_view after = text.substr(index + 1);
+            uint32_t previous = 0;
+            uint32_t next = 0;
+            return Utf8Text::next(before, previous) && Utf8Text::next(after, next)
+                && UnicodeText::isWordCharacter(previous) && UnicodeText::isWordCharacter(next);
+        }
 
-bool isHyphenToken(const String &token) {
-  if (token.isEmpty()) {
-    return false;
-  }
-  const char *text = token.c_str();
-  return std::all_of(text, text + token.length(),
-                     [](char c) { return c == '-'; });
-}
+        bool endsCjkPhrase(uint32_t codepoint) {
+            switch (codepoint) {
+            case ',':
+            case ';':
+            case ':':
+            case '!':
+            case '?':
+            case 0x3001U: // IDEOGRAPHIC COMMA
+            case 0x3002U: // IDEOGRAPHIC FULL STOP
+            case 0xFF01U: // FULLWIDTH EXCLAMATION MARK
+            case 0xFF0CU: // FULLWIDTH COMMA
+            case 0xFF1AU: // FULLWIDTH COLON
+            case 0xFF1BU: // FULLWIDTH SEMICOLON
+            case 0xFF1FU: // FULLWIDTH QUESTION MARK
+                return true;
+            default:
+                return false;
+            }
+        }
 
-bool isRhythmToken(const String &token) { return isHyphenToken(token); }
+    } // namespace Detail
 
-bool isEllipsisToken(const String &token) {
-  if (token.length() < 3) {
-    return false;
-  }
-  const char *text = token.c_str();
-  return std::all_of(text, text + token.length(),
-                     [](char c) { return c == '.'; });
-}
-
-} // namespace Detail
-
-bool isReadableTokenChar(char c) {
-  return LatinText::isWordCharacter(LatinText::byteValue(c));
-}
-
-bool isRhythmToken(const String &token) { return Detail::isHyphenToken(token); }
+    bool hasReadableText(std::string_view text) {
+        uint32_t codepoint = 0;
+        while (Utf8Text::next(text, codepoint)) {
+            if (UnicodeText::isWordCharacter(codepoint))
+                return true;
+        }
+        return false;
+    }
 
 } // namespace RsvpText

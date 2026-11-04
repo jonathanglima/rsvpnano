@@ -2,113 +2,32 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import shutil
+import tempfile
 import urllib.error
 import urllib.request
+import urllib.parse
+import zipfile
 from pathlib import Path
+
+from export_web_firmware import FLASH_EXPORTS, OTA_EXPORTS, write_release_metadata
+from package_release import BROWSER_BUNDLE
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WEB_FIRMWARE_DIR = ROOT / "web" / "firmware"
-MANIFEST_PATH = WEB_FIRMWARE_DIR / "manifest.json"
-REV2_MANIFEST_PATH = WEB_FIRMWARE_DIR / "manifest-rev2.json"
+FIRMWARE_DIR = ROOT / "build" / "firmware"
 DEFAULT_REPO = "ionutdecebal/rsvpnano"
-DEFAULT_REQUIRED_ASSETS = (
-    "rsvp-nano.bin",
-    "rsvp-nano-ota.bin",
-    "rsvp-nano-esp32-s3-touch-lcd-3.49-ota.bin",
-)
-DEFAULT_OPTIONAL_ASSETS = (
-    "rsvp-nano-rev2.bin",
-    "rsvp-nano-rev2-ota.bin",
-    "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-v2-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.16.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.16-ota.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.41.bin",
-    "rsvp-nano-esp32-s3-touch-amoled-2.41-ota.bin",
-)
-
-
-def default_manifest(name: str, binary: str, features: list[str]) -> dict:
-    return {
-        "name": name,
-        "version": "dev",
-        "new_install_prompt_erase": True,
-        "new_install_improv_wait_time": 0,
-        "features": features,
-        "builds": [
-            {
-                "chipFamily": "ESP32-S3",
-                "improv": False,
-                "parts": [
-                    {
-                        "path": binary,
-                        "offset": 0,
-                    }
-                ],
-            }
-        ],
-    }
-
-
-COMMON_FEATURES = [
-    "Books and articles library",
-    "Device-hosted web companion",
-    "RSS feed downloads",
-    "USB SD-card transfer mode",
-]
-
-FLASH_MANIFESTS = {
-    "rsvp-nano.bin": {
-        "path": MANIFEST_PATH,
-        "fallback": default_manifest("RSVP Nano", "rsvp-nano.bin", COMMON_FEATURES),
-    },
-    "rsvp-nano-rev2.bin": {
-        "path": REV2_MANIFEST_PATH,
-        "fallback": default_manifest(
-            "RSVP Nano Rev2",
-            "rsvp-nano-rev2.bin",
-            COMMON_FEATURES + ["GPIO42 backlight profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-1.8.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-1.8.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 1.8",
-            "rsvp-nano-esp32-s3-touch-amoled-1.8.bin",
-            COMMON_FEATURES + ["Touch AMOLED 1.8 profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-1.8-v2.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 1.8 V2 Test",
-            "rsvp-nano-esp32-s3-touch-amoled-1.8-v2.bin",
-            COMMON_FEATURES + ["Touch AMOLED 1.8 V2 test profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-2.16.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-2.16.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 2.16",
-            "rsvp-nano-esp32-s3-touch-amoled-2.16.bin",
-            COMMON_FEATURES + ["Touch AMOLED 2.16 profile"],
-        ),
-    },
-    "rsvp-nano-esp32-s3-touch-amoled-2.41.bin": {
-        "path": WEB_FIRMWARE_DIR / "manifest-esp32-s3-touch-amoled-2.41.json",
-        "fallback": default_manifest(
-            "RSVP Nano Touch AMOLED 2.41",
-            "rsvp-nano-esp32-s3-touch-amoled-2.41.bin",
-            COMMON_FEATURES + ["Touch AMOLED 2.41 profile"],
-        ),
-    },
+ASSET_FALLBACKS = {
+    "rsvp-nano-esp32-s3-touch-lcd-3.49.bin": ("rsvp-nano.bin",),
+    "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2.bin": ("rsvp-nano-rev2.bin",),
+}
+UI_BOARDS = {
+    "lcd349-v1": ("waveshare_esp32s3_touch_lcd_3_49", "rsvp-nano-esp32-s3-touch-lcd-3.49-ota.bin"),
+    "lcd349-v2": ("waveshare_esp32s3_touch_lcd_3_49_rev2", "rsvp-nano-esp32-s3-touch-lcd-3.49-rev2-ota.bin"),
 }
 
 
@@ -150,6 +69,42 @@ def download_file(url: str, destination: Path) -> None:
 def latest_release(repo: str) -> dict:
     return fetch_json(f"https://api.github.com/repos/{repo}/releases/latest")
 
+def stage_ui_preview(repo: str, tag: str, board: str = "lcd349-v1") -> dict:
+    """Stage one explicit, immutable preview without replacing Classic files."""
+    if not re.fullmatch(r"(?:preview-ui-dictionary-[A-Za-z0-9._-]+|v0\.2\.\d+(?:-[A-Za-z0-9._-]+)?)", tag):
+        raise SystemExit("New UI requires an explicit preview or v0.2.x release tag.")
+    if board not in UI_BOARDS:
+        raise SystemExit("Unsupported New UI board")
+    release = fetch_json(f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}")
+    if release.get("tag_name") != tag or not release.get("prerelease") or release.get("draft"):
+        raise SystemExit("New UI must be a published prerelease at the selected tag.")
+    name = next(x["binary"] for x in FLASH_EXPORTS if x["id"] == board)
+    asset = find_asset(release, name)
+    sums = find_asset(release, "SHA256SUMS.txt")
+    checksum_file = FIRMWARE_DIR / f"new-ui-{board}-SHA256SUMS.txt"
+    download_file(sums["browser_download_url"], checksum_file)
+    expected = {}
+    for line in checksum_file.read_text().splitlines():
+        parts = line.split()
+        if len(parts) == 2 and re.fullmatch(r"[a-fA-F0-9]{64}", parts[0]):
+            key = parts[1].lstrip("*")
+            if key in expected:
+                raise SystemExit("Duplicate New UI checksum")
+            expected[key] = parts[0].lower()
+    destination = FIRMWARE_DIR / ("new-ui-" + name)
+    pending = destination.with_suffix(".partial")
+    try:
+        download_file(asset["browser_download_url"], pending)
+        digest = hashlib.sha256(pending.read_bytes()).hexdigest()
+        if digest != expected.get(name):
+            raise SystemExit("New UI image checksum mismatch or missing checksum.")
+        if asset.get("digest") and asset["digest"] != "sha256:" + digest:
+            raise SystemExit("New UI GitHub digest mismatch")
+        pending.replace(destination)
+    finally:
+        pending.unlink(missing_ok=True)
+    return {"version": tag, "firmware": {board: destination.name}}
+
 
 def find_asset(release: dict, name: str, required: bool = True) -> dict | None:
     for asset in release.get("assets", []):
@@ -160,26 +115,138 @@ def find_asset(release: dict, name: str, required: bool = True) -> dict | None:
     return None
 
 
-def load_manifest(path: Path, fallback: dict) -> dict:
-    if not path.exists():
-        return json.loads(json.dumps(fallback))
-    return json.loads(path.read_text())
+def find_asset_with_fallback(release: dict, name: str, required: bool = True) -> tuple[dict | None, str | None]:
+    asset = find_asset(release, name, required=False)
+    if asset is not None:
+        return asset, name
+
+    for fallback in ASSET_FALLBACKS.get(name, ()):
+        asset = find_asset(release, fallback, required=False)
+        if asset is not None:
+            return asset, fallback
+
+    if required:
+        raise SystemExit(f"Latest release is missing required asset: {name}")
+    return None, None
 
 
-def write_manifests(version: str, available_flash_assets: set[str], prune_missing: bool) -> None:
-    for asset_name, manifest_info in FLASH_MANIFESTS.items():
-        path = manifest_info["path"]
-        if asset_name in available_flash_assets:
-            manifest = load_manifest(path, manifest_info["fallback"])
-            manifest["version"] = version
-            path.write_text(json.dumps(manifest, indent=2) + "\n")
-        elif prune_missing and path.exists():
-            path.unlink()
+def stage_browser_bundle(release: dict, names: list[str]) -> set[str]:
+    """Read verified, explicitly named ZIP members; never extract arbitrary paths."""
+    missing = [name for name in names if find_asset_with_fallback(release, name, required=False)[0] is None]
+    bundle = find_asset(release, BROWSER_BUNDLE, required=False)
+    if not missing or bundle is None:
+        return set()
+    sums = find_asset(release, "SHA256SUMS.txt")
+    with tempfile.TemporaryDirectory(dir=FIRMWARE_DIR) as temporary:
+        root = Path(temporary)
+        checksum_file = root / "SHA256SUMS.txt"
+        download_file(sums["browser_download_url"], checksum_file)
+        expected = {}
+        for line in checksum_file.read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and re.fullmatch(r"[a-fA-F0-9]{64}", parts[0]):
+                name = parts[1].lstrip("*")
+                if name in expected:
+                    raise SystemExit("Duplicate browser bundle checksum")
+                expected[name] = parts[0].lower()
+        archive_path = root / BROWSER_BUNDLE
+        download_file(bundle["browser_download_url"], archive_path)
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        if digest != expected.get(BROWSER_BUNDLE):
+            raise SystemExit("Browser bundle checksum mismatch or missing checksum")
+        if bundle.get("digest") and bundle["digest"] != "sha256:" + digest:
+            raise SystemExit("Browser bundle GitHub digest mismatch")
+        with zipfile.ZipFile(archive_path) as archive:
+            members = archive.namelist()
+            for name in missing:
+                if members.count(name) != 1:
+                    raise SystemExit(f"Missing or duplicate browser bundle member: {name}")
+                if not 65536 < archive.getinfo(name).file_size <= 16 * 1024 * 1024:
+                    raise SystemExit(f"Invalid browser image size: {name}")
+                data = archive.read(name)
+                if data[0] != 0xE9 or hashlib.sha256(data).hexdigest() != expected.get(name):
+                    raise SystemExit(f"Browser image checksum mismatch: {name}")
+                (root / name).write_bytes(data)
+        # Do not replace any staged board until every requested image verifies.
+        for name in missing:
+            (root / name).replace(FIRMWARE_DIR / name)
+    return set(missing)
+
+
+def stage_update_catalog(repo: str, classic: dict, preview_tag: str, rev2_preview_tag: str = "") -> None:
+    """Expose only releases containing a verified selector-compatible descriptor."""
+    entries = []
+    board_assets = dict(UI_BOARDS.values())
+    seen = set()
+    releases = [("classic", classic, set(board_assets))]
+    for board, tag in (("lcd349-v1", preview_tag), ("lcd349-v2", rev2_preview_tag)):
+        if tag:
+            releases.append(("new-ui", fetch_json(
+                f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}"),
+                {UI_BOARDS[board][0]}))
+    for index, (channel, release, allowed_boards) in enumerate(releases):
+        descriptor = find_asset(release, "update-channel.json", required=False)
+        if descriptor is None:
+            # Older Classic has no selector; do not make it the round-trip target.
+            if channel == "new-ui":
+                raise SystemExit("New UI release is missing its update descriptor")
+            continue
+        if release.get("draft") or bool(release.get("prerelease")) != (channel == "new-ui"):
+            raise SystemExit("Wrong release channel for update catalog")
+        path = FIRMWARE_DIR / f"{channel}-{index}-update-channel.json"
+        download_file(descriptor["browser_download_url"], path)
+        if path.stat().st_size > 16384:
+            raise SystemExit("Update descriptor too large")
+        try:
+            document = json.loads(path.read_text())
+        except (ValueError, UnicodeError) as error:
+            raise SystemExit("Invalid update descriptor") from error
+        listed = document.get("releases", []) if isinstance(document, dict) else []
+        if (not isinstance(document, dict) or document.get("schema") != 1
+            or not isinstance(listed, list) or not 1 <= len(listed) <= len(allowed_boards)):
+            raise SystemExit("Invalid update descriptor")
+        for entry in listed:
+            if not isinstance(entry, dict):
+                raise SystemExit("Invalid update entry")
+            board = entry.get("board", "")
+            if not isinstance(board, str) or board not in allowed_boards:
+                raise SystemExit("Invalid update board")
+            name = board_assets[board]
+            if (entry.get("channel") != channel or entry.get("tag") != release["tag_name"]
+                or entry.get("asset") != name
+                or not isinstance(entry.get("sha256"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", entry["sha256"])
+                or not isinstance(entry.get("commit"), str)
+                or not re.fullmatch(r"[a-f0-9]{40}", entry["commit"])
+                or not isinstance(entry.get("bytes"), int)
+                or not 65536 <= entry["bytes"] <= 8 * 1024 * 1024
+                or (channel, board) in seen):
+                raise SystemExit("Invalid or duplicate update entry")
+            asset = find_asset(release, name)
+            pending = FIRMWARE_DIR / f"{channel}-ota.partial"
+            try:
+                download_file(asset["browser_download_url"], pending)
+                data = pending.read_bytes()
+                version = (entry["tag"] + "+" + entry["commit"][:12]).encode()
+                if (len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]
+                    or data[0] != 0xE9 or version + b"\0" not in data
+                    or name.encode() + b"\0" not in data
+                    or (asset.get("digest") and asset["digest"] != "sha256:" + entry["sha256"])):
+                    raise SystemExit("OTA image does not match its update descriptor")
+            finally:
+                pending.unlink(missing_ok=True)
+            entries.append(entry)
+            seen.add((channel, board))
+    if rev2_preview_tag and ("classic", UI_BOARDS["lcd349-v2"][0]) not in seen:
+        raise SystemExit("Rev2 New UI requires a selector-compatible Classic return target")
+    pending = FIRMWARE_DIR / "channels.json.partial"
+    pending.write_text(json.dumps({"schema": 1, "releases": entries}, indent=2) + "\n")
+    pending.replace(FIRMWARE_DIR / "channels.json")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Populate web/firmware from the latest published GitHub Release."
+        description="Populate build/firmware from the latest published GitHub Release."
     )
     parser.add_argument(
         "--repo",
@@ -192,6 +259,10 @@ def main() -> int:
         dest="assets",
         help="Release asset to download. Repeat to request multiple assets.",
     )
+    parser.add_argument("--preview-tag", default=os.environ.get("RSVP_UI_PREVIEW_TAG", "").strip(),
+                        help="Explicit accepted new-UI prerelease tag; Classic remains the default.")
+    parser.add_argument("--rev2-preview-tag", default=os.environ.get("RSVP_UI_REV2_PREVIEW_TAG", "").strip(),
+                        help="Explicit accepted Rev2 New UI prerelease; independent of the Rev1 tag.")
     args = parser.parse_args()
 
     release = latest_release(args.repo)
@@ -199,51 +270,66 @@ def main() -> int:
     if not tag_name:
         raise SystemExit("Latest release is missing tag_name.")
 
-    WEB_FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
 
-    if args.assets:
-        requested_assets = tuple(args.assets)
-        downloaded_assets: set[str] = set()
-        for asset_name in requested_assets:
-            asset = find_asset(release, asset_name)
-            url = str(asset.get("browser_download_url", "")).strip()
-            if not url:
+    requested_assets = tuple(args.assets) if args.assets else None
+    available_firmware: dict[str, str] = {}
+    all_exports = (*FLASH_EXPORTS, *OTA_EXPORTS)
+    exports = all_exports if requested_assets is not None else FLASH_EXPORTS
+    bundled = stage_browser_bundle(release, [entry["binary"] for entry in FLASH_EXPORTS
+        if requested_assets is None or entry["binary"] in requested_assets])
+    for export in exports:
+        asset_name = export["binary"]
+        if requested_assets is not None and asset_name not in requested_assets:
+            continue
+        if asset_name in bundled:
+            available_firmware[export["id"]] = asset_name
+            print(f"Verified {asset_name} from {tag_name} browser bundle")
+            continue
+        asset, release_asset_name = find_asset_with_fallback(
+            release,
+            asset_name,
+            required=requested_assets is not None,
+        )
+        if asset is None:
+            print(f"Skipping release asset not present in {tag_name}: {asset_name}")
+            continue
+        url = str(asset.get("browser_download_url", "")).strip()
+        if not url:
+            if requested_assets is not None:
                 raise SystemExit(f"Release asset is missing browser_download_url: {asset_name}")
-            destination = WEB_FIRMWARE_DIR / asset_name
-            print(f"Downloading {asset_name} from {tag_name} -> {destination}")
-            download_file(url, destination)
-            downloaded_assets.add(asset_name)
-    else:
-        downloaded_assets = set()
-        for asset_name in DEFAULT_REQUIRED_ASSETS:
-            asset = find_asset(release, asset_name)
-            url = str(asset.get("browser_download_url", "")).strip()
-            if not url:
-                raise SystemExit(f"Release asset is missing browser_download_url: {asset_name}")
-            destination = WEB_FIRMWARE_DIR / asset_name
-            print(f"Downloading {asset_name} from {tag_name} -> {destination}")
-            download_file(url, destination)
-            downloaded_assets.add(asset_name)
+            print(f"Skipping release asset with no download URL: {asset_name}")
+            continue
+        destination = FIRMWARE_DIR / asset_name
+        print(f"Downloading {release_asset_name} from {tag_name} -> {destination}")
+        download_file(url, destination)
+        if "id" in export:
+            available_firmware[export["id"]] = asset_name
 
-        for asset_name in DEFAULT_OPTIONAL_ASSETS:
-            asset = find_asset(release, asset_name, required=False)
-            if asset is None:
-                print(f"Skipping optional release asset not present in {tag_name}: {asset_name}")
-                continue
-            url = str(asset.get("browser_download_url", "")).strip()
-            if not url:
-                print(f"Skipping optional release asset with no download URL: {asset_name}")
-                continue
-            destination = WEB_FIRMWARE_DIR / asset_name
-            print(f"Downloading {asset_name} from {tag_name} -> {destination}")
-            download_file(url, destination)
-            downloaded_assets.add(asset_name)
+    if requested_assets is not None:
+        unknown_assets = set(requested_assets) - {export["binary"] for export in all_exports}
+        if unknown_assets:
+            formatted = ", ".join(sorted(unknown_assets))
+            raise SystemExit(f"Unknown firmware asset requested: {formatted}")
+    if requested_assets is None and not available_firmware:
+        raise SystemExit(f"Release {tag_name} has no browser-flasher images.")
 
-    write_manifests(
-        tag_name,
-        {asset_name for asset_name in downloaded_assets if asset_name in FLASH_MANIFESTS},
-        prune_missing=not args.assets,
-    )
+    if available_firmware:
+        write_release_metadata(tag_name, available_firmware)
+        if args.preview_tag or args.rev2_preview_tag:
+            metadata_path = FIRMWARE_DIR / "release.json"
+            metadata = json.loads(metadata_path.read_text())
+            variants = []
+            if args.preview_tag:
+                metadata["newUi"] = stage_ui_preview(args.repo, args.preview_tag)
+                variants.append(metadata["newUi"])
+            if args.rev2_preview_tag:
+                variants.append(stage_ui_preview(args.repo, args.rev2_preview_tag, "lcd349-v2"))
+            # Preserve the Rev1-only field for cached clients while new clients
+            # select a version and image from the variant matching their board.
+            metadata["newUiVariants"] = variants
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        stage_update_catalog(args.repo, release, args.preview_tag, args.rev2_preview_tag)
     print(f"Web firmware updated to release {tag_name}")
     return 0
 

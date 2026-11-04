@@ -1,3 +1,6 @@
+import org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnPlugin
+import org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnRootExtension
+
 plugins {
 	alias(libs.plugins.kotlin.multiplatform) apply false
 	alias(libs.plugins.kotlin.serialization) apply false
@@ -6,6 +9,10 @@ plugins {
 	alias(libs.plugins.jetbrains.compose) apply false
 	alias(libs.plugins.android.library) apply false
 	alias(libs.plugins.android.application) apply false
+}
+
+plugins.withType<WasmYarnPlugin> {
+	the<WasmYarnRootExtension>().reportNewYarnLock = true
 }
 
 tasks.register("checkAndroid") {
@@ -19,13 +26,41 @@ tasks.register("checkAndroid") {
 	)
 }
 
+val assembleWebSite by tasks.registering(Sync::class) {
+	group = "distribution"
+	description = "Stages the Compose/Wasm application and firmware for GitHub Pages."
+	val siteDirectory = layout.buildDirectory.dir("webSite")
+
+	dependsOn(":webApp:wasmJsBrowserDistribution")
+	from(project(":webApp").layout.buildDirectory.dir("dist/wasmJs/productionExecutable"))
+	from(layout.buildDirectory.dir("firmware")) {
+		into("firmware")
+	}
+	into(siteDirectory)
+	doLast {
+		val site = siteDirectory.get().asFile
+		val assets = site.walkTopDown()
+			.filter { it.isFile && !it.relativeTo(site).invariantSeparatorsPath.startsWith("firmware/") }
+			.map { "./${it.relativeTo(site).invariantSeparatorsPath}" }
+			.filterNot {
+				it == "./asset-manifest.json" ||
+					it.endsWith(".map") ||
+					it.endsWith(".LICENSE.txt")
+			}
+			.sorted()
+			.joinToString(prefix = "[\n  \"", separator = "\",\n  \"", postfix = "\"\n]\n")
+		site.resolve("asset-manifest.json").writeText(assets)
+	}
+}
+
 tasks.register("checkWeb") {
 	group = "verification"
-	description = "Runs web converter checks and publishes the generated JavaScript bundle."
+	description = "Runs Wasm conversion and browser checks, then stages the Pages site."
 
 	dependsOn(
-		":conversionCore:jsNodeTest",
-		":conversionCore:publishWebConverterJs",
+		":conversionCore:wasmJsBrowserTest",
+		":webApp:wasmJsBrowserTest",
+		assembleWebSite,
 	)
 }
 

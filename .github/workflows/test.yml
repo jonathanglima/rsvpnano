@@ -5,15 +5,70 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  pacing:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Check web companion and production bundle
+        run: bash ./gradlew checkWeb --no-daemon
+
+  firmware:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check firmware targets and layouts
+        run: |
+          python -m unittest discover -s tools -p "test_firmware_targets.py"
+          python -m unittest discover -s tools -p "test_release_*.py"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: ${{ runner.os }}-pio-tests-${{ hashFiles('platformio.ini', 'boards/**', 'tools/pio_*.py') }}
+          restore-keys: ${{ runner.os }}-pio-
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio freetype-py fonttools uharfbuzz lz4
 
-      - name: Run pacing tests
-        run: pio test -e native_test
+      - name: Check generated localization
+        run: |
+          python localization/generate_localization.py --check
+          python localization/generate_locale_packs.py --check
+          python -m unittest localization/test_locale_packs.py
+          python -m unittest discover -s fonts -p "test_*.py"
+
+      - name: Run native firmware tests
+        run: >-
+          pio test -e native_test -e native_watch_test -e native_board_test
+          -e native_light_sleep_test -e native_amoled_test
+          -e native_amoled_241_v1_test -e native_amoled_241_v2_test
+
+      - name: Check native Arduino_GFX text strip rendering
+        run: python test/native_canvas/run.py --fetch-library

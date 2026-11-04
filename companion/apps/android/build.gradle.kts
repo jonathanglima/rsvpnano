@@ -1,0 +1,51 @@
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+android {
+    namespace = "com.rsvpnano.android"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.rsvpnano.android"
+        minSdk = 34
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+}
+
+dependencies {
+    implementation(project(":shared"))
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.activity.compose)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.lifecycle.viewmodel.compose)
+
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.kotlinx.coroutines.core)
+}

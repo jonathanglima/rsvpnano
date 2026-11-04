@@ -1,11 +1,23 @@
-name: Build web flasher
+name: Pages
 
 on:
   push:
-    branches:
-      - main
-  release:
-    types: [published]
+    branches: [main]
+    paths:
+      - 'companion/apps/web/**'
+      - 'companion/shared/**'
+      - 'companion/conversion/**'
+      - 'companion/build-logic/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - 'gradlew'
+      - 'gradle/**'
+      - 'kotlin-js-store/wasm/**'
+      - 'tools/fetch_release_firmware.py'
+      - 'tools/export_web_firmware.py'
+      - 'tools/package_release.py'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 concurrency:
@@ -14,17 +26,19 @@ concurrency:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+        with:
+          ref: main
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -34,27 +48,32 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Check and build web converter
-        run: bash ./gradlew checkWeb --no-daemon
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Download latest release firmware
-        if: github.repository == 'ionutdecebal/rsvpnano'
+        if: github.repository == 'jonathanglima/rsvpnano'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RSVP_UI_PREVIEW_TAG: ${{ vars.RSVP_UI_PREVIEW_TAG }}
+          RSVP_UI_REV2_PREVIEW_TAG: ${{ vars.RSVP_UI_REV2_PREVIEW_TAG }}
         run: python tools/fetch_release_firmware.py --repo "${{ github.repository }}"
 
+      - name: Check and stage web companion
+        run: bash ./gradlew checkWeb --no-daemon
+
       - name: Configure GitHub Pages
-        if: github.repository == 'ionutdecebal/rsvpnano'
-        uses: actions/configure-pages@v5
+        if: github.repository == 'jonathanglima/rsvpnano'
+        uses: actions/configure-pages@v6
 
       - name: Upload GitHub Pages artifact
-        if: github.repository == 'ionutdecebal/rsvpnano'
-        uses: actions/upload-pages-artifact@v3
+        if: github.repository == 'jonathanglima/rsvpnano'
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: web
+          path: build/webSite
 
   deploy:
-    if: github.repository == 'ionutdecebal/rsvpnano' && (github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'jonathanglima/rsvpnano' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
 
@@ -70,4 +89,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
